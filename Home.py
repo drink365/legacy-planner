@@ -7,9 +7,10 @@ TITLE = brand.get("title", "Grace Family Office｜永傳家族辦公室")
 
 st.markdown(f"# {TITLE}")
 st.markdown(
-    "**高資產家族的數位傳承顧問**  
-"
-    "**30 年專業 × AI 智能** — 以情境化路徑模擬，讓您看見『不規劃 vs. 規劃』的差距。"
+    """
+    **高資產家族的數位傳承顧問**  
+    **30 年專業 × AI 智能** — 以情境化路徑模擬，讓您看見『不規劃 vs. 規劃』的差距。
+    """
 )
 
 c1, c2, c3 = st.columns(3)
