@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from graphviz import Digraph
 import io
+import json
 
 # =============================
 # 頁面設定
@@ -18,24 +19,59 @@ st.markdown("這是傳承規劃的第一步：**盤點人 & 盤點資產 → 自
 # =============================
 # Demo 資料
 # =============================
-demo_family = [
-    {"name": "王大明", "relation": "父親", "age": 65},
-    {"name": "李淑芬", "relation": "母親", "age": 62},
-    {"name": "王小華", "relation": "子女", "age": 35},
-    {"name": "王小美", "relation": "子女", "age": 32}
+DEMO_FAMILY = [
+    {"name": "陳志明", "relation": "父親", "age": 65},
+    {"name": "王春嬌", "relation": "母親", "age": 62},
+    {"name": "陳小明", "relation": "子女", "age": 35},
+    {"name": "陳小芳", "relation": "子女", "age": 32}
 ]
 
-demo_assets = [
-    {"type": "公司股權", "value": 100000000, "heir": "王小華"},
-    {"type": "不動產", "value": 50000000, "heir": "王小美"},
-    {"type": "保單", "value": 30000000, "heir": "李淑芬"}
+DEMO_ASSETS = [
+    {"type": "公司股權", "value": 100_000_000, "heir": "陳小明"},
+    {"type": "不動產", "value": 50_000_000, "heir": "陳小芳"},
+    {"type": "保單",   "value": 30_000_000, "heir": "王春嬌"}
 ]
 
+# =============================
 # 初始化 Session State
+# =============================
 if "family" not in st.session_state:
-    st.session_state["family"] = demo_family.copy()
+    st.session_state["family"] = DEMO_FAMILY.copy()
 if "assets" not in st.session_state:
-    st.session_state["assets"] = demo_assets.copy()
+    st.session_state["assets"] = DEMO_ASSETS.copy()
+
+# =============================
+# 快捷操作列：重置／載入示範／匯出JSON
+# =============================
+ops_col1, ops_col2, ops_col3 = st.columns([1,1,2])
+
+with ops_col1:
+    if st.button("🔄 重置（清空資料）", use_container_width=True):
+        st.session_state["family"] = []
+        st.session_state["assets"] = []
+        st.success("已清空資料。請開始新增家庭成員與資產。")
+
+with ops_col2:
+    if st.button("🧪 載入示範資料", use_container_width=True):
+        st.session_state["family"] = DEMO_FAMILY.copy()
+        st.session_state["assets"] = DEMO_ASSETS.copy()
+        st.info("已載入示範資料。")
+
+with ops_col3:
+    scenario = {
+        "family": st.session_state["family"],
+        "assets": st.session_state["assets"]
+    }
+    json_bytes = json.dumps(scenario, ensure_ascii=False, indent=2).encode("utf-8")
+    st.download_button(
+        label="📥 下載目前情境（JSON）",
+        data=json_bytes,
+        file_name="legacy_scenario.json",
+        mime="application/json",
+        use_container_width=True
+    )
+
+st.markdown("---")
 
 # =============================
 # Step 1: 家庭成員
@@ -57,7 +93,16 @@ with st.form("add_family"):
 
 if st.session_state["family"]:
     st.subheader("👨‍👩‍👧 家庭成員清單")
-    st.table(pd.DataFrame(st.session_state["family"]))
+    df_family = pd.DataFrame(st.session_state["family"])
+    st.table(df_family)
+
+    # 刪除成員
+    delete_member = st.selectbox("選擇要刪除的成員", [""] + [f["name"] for f in st.session_state["family"]])
+    if delete_member and st.button("❌ 刪除成員"):
+        st.session_state["family"] = [f for f in st.session_state["family"] if f["name"] != delete_member]
+        st.success(f"已刪除成員：{delete_member}")
+else:
+    st.info("尚無家庭成員，請先新增。")
 
 # =============================
 # Step 2: 資產盤點
@@ -71,7 +116,7 @@ with st.form("add_asset"):
     with cols[0]:
         asset_type = st.selectbox("資產類別", ["公司股權", "不動產", "金融資產", "保單", "海外資產", "其他"])
     with cols[1]:
-        value = st.number_input("金額 (TWD)", min_value=0, step=1000000)
+        value = st.number_input("金額 (TWD)", min_value=0, step=1_000_000)
     with cols[2]:
         heir = st.selectbox("分配給", members if members else ["尚未新增成員"])
 
@@ -81,7 +126,16 @@ with st.form("add_asset"):
 
 if st.session_state["assets"]:
     st.subheader("💰 資產清單")
-    st.table(pd.DataFrame(st.session_state["assets"]))
+    df_assets = pd.DataFrame(st.session_state["assets"])
+    st.table(df_assets)
+
+    # 刪除資產
+    delete_asset_idx = st.selectbox("選擇要刪除的資產", [""] + list(range(len(st.session_state["assets"]))))
+    if delete_asset_idx != "" and st.button("❌ 刪除資產"):
+        removed = st.session_state["assets"].pop(int(delete_asset_idx))
+        st.success(f"已刪除資產：{removed['type']} (金額 {removed['value']:,})")
+else:
+    st.info("尚無資產，請先新增。")
 
 # =============================
 # Step 3: 傳承圖生成
@@ -114,7 +168,6 @@ if st.session_state["family"] and st.session_state["assets"]:
     summary["比例 (%)"] = summary["value"] / summary["value"].sum() * 100
     st.table(summary)
 
-    # 公平性提示
     total = summary["value"].sum()
     for _, row in summary.iterrows():
         percent = row["value"] / total * 100
@@ -122,7 +175,7 @@ if st.session_state["family"] and st.session_state["assets"]:
             st.warning(f"⚠️ {row['heir']} 佔比 {percent:.1f}%，可能引起公平性疑慮")
 
     # =============================
-    # Step 5: 匯出功能
+    # Step 5: 匯出功能（CSV）
     # =============================
     csv_buffer = io.StringIO()
     summary.to_csv(csv_buffer, index=False)
@@ -142,6 +195,6 @@ else:
 st.markdown("---")
 st.markdown("""
 《影響力》傳承策略平台｜永傳家族辦公室  
-🌐 [gracefo.com](https://gracefo.com)  
+🌐 gracefo.com  
 📩 聯絡信箱：123@gracefo.com
 """)
