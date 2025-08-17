@@ -16,12 +16,31 @@ st.title("📦 傳承圖生成器 | 永傳家族傳承教練")
 st.markdown("這是傳承規劃的第一步：**盤點人 & 盤點資產 → 自動生成傳承圖**")
 
 # =============================
+# Demo 資料
+# =============================
+demo_family = [
+    {"name": "王大明", "relation": "父親", "age": 65},
+    {"name": "李淑芬", "relation": "母親", "age": 62},
+    {"name": "王小華", "relation": "子女", "age": 35},
+    {"name": "王小美", "relation": "子女", "age": 32}
+]
+
+demo_assets = [
+    {"type": "公司股權", "value": 100000000, "heir": "王小華"},
+    {"type": "不動產", "value": 50000000, "heir": "王小美"},
+    {"type": "保單", "value": 30000000, "heir": "李淑芬"}
+]
+
+# 初始化 Session State
+if "family" not in st.session_state:
+    st.session_state["family"] = demo_family.copy()
+if "assets" not in st.session_state:
+    st.session_state["assets"] = demo_assets.copy()
+
+# =============================
 # Step 1: 家庭成員
 # =============================
 st.header("Step 1. 家庭成員")
-
-if "family" not in st.session_state:
-    st.session_state["family"] = []
 
 with st.form("add_family"):
     cols = st.columns(3)
@@ -44,9 +63,6 @@ if st.session_state["family"]:
 # Step 2: 資產盤點
 # =============================
 st.header("Step 2. 資產盤點")
-
-if "assets" not in st.session_state:
-    st.session_state["assets"] = []
 
 members = [f["name"] for f in st.session_state["family"]] if st.session_state["family"] else []
 
