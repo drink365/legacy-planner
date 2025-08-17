@@ -27,7 +27,7 @@ if user_msg:
         st.markdown(user_msg)
 
     client = OpenAI(api_key=st.secrets["openai"]["api_key"])
-    model = st.secrets["openai"].get("model", "gpt-4o-mini")
+    model = st.secrets["openai"].get("model", "gpt-5-nano")
     messages = [{"role": "system", "content": sys_prompt}] + [
         {"role": r, "content": c} for r, c in st.session_state.chat
     ]
