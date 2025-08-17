@@ -1,24 +1,131 @@
 import streamlit as st
+import pandas as pd
+from graphviz import Digraph
+import io
 
-st.set_page_config(page_title="永傳｜數位傳承顧問", page_icon="🏛️", layout="centered")
-
-brand = st.secrets.get("brand", {})
-TITLE = brand.get("title", "Grace Family Office｜永傳家族辦公室")
-
-st.markdown(f"# {TITLE}")
-st.markdown(
-    """
-    **高資產家族的數位傳承顧問**  
-    **30 年專業 × AI 智能** — 以情境化路徑模擬，讓您看見『不規劃 vs. 規劃』的差距。
-    """
+# =============================
+# 頁面設定
+# =============================
+st.set_page_config(
+    page_title="📦 傳承圖生成器 | 永傳家族傳承教練",
+    page_icon="📦",
+    layout="wide"
 )
 
-c1, c2, c3 = st.columns(3)
-with c1:
-    st.page_link("pages/02_Tax_Path_Simulator.py", label="開始路徑模擬", icon="🧭")
-with c2:
-    st.page_link("pages/09_Demo_Lead_and_Report.py", label="顧問報告下載（Demo）", icon="📄")
-with c3:
-    st.page_link("pages/99_Copilot.py", label="永傳顧問 AI", icon="🤖")
+st.title("📦 傳承圖生成器 | 永傳家族傳承教練")
+st.markdown("這是傳承規劃的第一步：**盤點人 & 盤點資產 → 自動生成傳承圖**")
 
-st.caption("本平台提供初步規劃建議與教育資訊，實際仍需顧問審視後決定。")
+# =============================
+# Step 1: 家庭成員
+# =============================
+st.header("Step 1. 家庭成員")
+
+if "family" not in st.session_state:
+    st.session_state["family"] = []
+
+with st.form("add_family"):
+    cols = st.columns(3)
+    with cols[0]:
+        name = st.text_input("姓名")
+    with cols[1]:
+        relation = st.selectbox("關係", ["父親", "母親", "配偶", "子女", "其他"])
+    with cols[2]:
+        age = st.number_input("年齡", min_value=0, max_value=120, step=1)
+
+    submitted = st.form_submit_button("➕ 新增成員")
+    if submitted and name:
+        st.session_state["family"].append({"name": name, "relation": relation, "age": age})
+
+if st.session_state["family"]:
+    st.subheader("👨‍👩‍👧 家庭成員清單")
+    st.table(pd.DataFrame(st.session_state["family"]))
+
+# =============================
+# Step 2: 資產盤點
+# =============================
+st.header("Step 2. 資產盤點")
+
+if "assets" not in st.session_state:
+    st.session_state["assets"] = []
+
+members = [f["name"] for f in st.session_state["family"]] if st.session_state["family"] else []
+
+with st.form("add_asset"):
+    cols = st.columns(3)
+    with cols[0]:
+        asset_type = st.selectbox("資產類別", ["公司股權", "不動產", "金融資產", "保單", "海外資產", "其他"])
+    with cols[1]:
+        value = st.number_input("金額 (TWD)", min_value=0, step=1000000)
+    with cols[2]:
+        heir = st.selectbox("分配給", members if members else ["尚未新增成員"])
+
+    submitted_asset = st.form_submit_button("➕ 新增資產")
+    if submitted_asset and value > 0 and heir != "尚未新增成員":
+        st.session_state["assets"].append({"type": asset_type, "value": value, "heir": heir})
+
+if st.session_state["assets"]:
+    st.subheader("💰 資產清單")
+    st.table(pd.DataFrame(st.session_state["assets"]))
+
+# =============================
+# Step 3: 傳承圖生成
+# =============================
+st.header("Step 3. 傳承圖")
+
+if st.session_state["family"] and st.session_state["assets"]:
+    dot = Digraph(format="png")
+    dot.attr(rankdir="TB", size="8")
+
+    # 家庭成員節點
+    for f in st.session_state["family"]:
+        dot.node(f["name"], f"{f['name']} ({f['relation']})", shape="ellipse", style="filled", color="lightgrey")
+
+    # 資產節點與箭頭
+    for idx, a in enumerate(st.session_state["assets"]):
+        asset_label = f"{a['type']} | {a['value']:,}"
+        node_id = f"asset{idx}"
+        dot.node(node_id, asset_label, shape="box", style="filled", color="lightblue")
+        dot.edge(node_id, a["heir"])
+
+    st.graphviz_chart(dot)
+
+    # =============================
+    # Step 4: 公平性檢測
+    # =============================
+    df = pd.DataFrame(st.session_state["assets"])
+    summary = df.groupby("heir")["value"].sum().reset_index()
+    st.subheader("📊 分配總覽")
+    summary["比例 (%)"] = summary["value"] / summary["value"].sum() * 100
+    st.table(summary)
+
+    # 公平性提示
+    total = summary["value"].sum()
+    for _, row in summary.iterrows():
+        percent = row["value"] / total * 100
+        if percent > 50:
+            st.warning(f"⚠️ {row['heir']} 佔比 {percent:.1f}%，可能引起公平性疑慮")
+
+    # =============================
+    # Step 5: 匯出功能
+    # =============================
+    csv_buffer = io.StringIO()
+    summary.to_csv(csv_buffer, index=False)
+    st.download_button(
+        label="📥 下載分配摘要 (CSV)",
+        data=csv_buffer.getvalue(),
+        file_name="inheritance_summary.csv",
+        mime="text/csv"
+    )
+
+else:
+    st.info("請先新增 **家庭成員** 與 **資產**，再生成傳承圖。")
+
+# =============================
+# 頁尾品牌資訊
+# =============================
+st.markdown("---")
+st.markdown("""
+《影響力》傳承策略平台｜永傳家族辦公室  
+🌐 [gracefo.com](https://gracefo.com)  
+📩 聯絡信箱：123@gracefo.com
+""")
