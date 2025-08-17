@@ -8,11 +8,13 @@ import streamlit as st
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
+)
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# ---------- 1) 註冊支援繁中的字型 ----------
+# ========= 1) 註冊支援繁中的字型（請把 TTF 放在 assets/fonts/ 下） =========
 FONT_DIR = os.path.join("assets", "fonts")
 REGULAR_TTF = os.path.join(FONT_DIR, "NotoSansTC-Regular.ttf")
 BOLD_TTF    = os.path.join(FONT_DIR, "NotoSansTC-Bold.ttf")
@@ -25,12 +27,41 @@ def _register_fonts():
             return "NotoTC", "NotoTC-Bold"
     except Exception:
         pass
-    # 找不到字型檔則退回預設（英文字可，但中文會方塊）
+    # 找不到字型時退回 Helvetica（英文可、中文會變方塊）
     return "Helvetica", "Helvetica-Bold"
 
 BASE_FONT, BASE_FONT_BOLD = _register_fonts()
 
-# ---------- 2) 元件 ----------
+# ========= 2) Logo：本地優先 → secrets.logo_url → 佔位圖 =========
+def _try_logo(story):
+    # ① 先試本地檔（建議放透明 PNG）
+    local = os.path.join("assets", "logo.png")
+    if os.path.exists(local):
+        try:
+            story.append(RLImage(local, width=150, height=150 * 0.28))
+            return
+        except Exception:
+            pass
+
+    # ② 再試 secrets 內的外部 URL
+    brand = st.secrets.get("brand", {})
+    logo_url = brand.get("logo_url", "")
+    if logo_url:
+        try:
+            story.append(RLImage(logo_url, width=150, height=150 * 0.28))
+            return
+        except Exception:
+            pass
+
+    # ③ 最後用佔位圖，確保版面不會空白
+    placeholder = os.path.join("assets", "logo_placeholder.png")
+    if os.path.exists(placeholder):
+        try:
+            story.append(RLImage(placeholder, width=150, height=150 * 0.28))
+        except Exception:
+            pass
+
+# ========= 3) 共用：鍵值表格（含品牌色、字型） =========
 def _kv_table(data: Dict[str, Any], col1: str = "欄位", col2: str = "內容"):
     rows = [[col1, col2]] + [[str(k), str(v)] for k, v in data.items()]
     t = Table(rows, colWidths=[140, 360])
@@ -50,35 +81,29 @@ def _kv_table(data: Dict[str, Any], col1: str = "欄位", col2: str = "內容"):
     ]))
     return t
 
-def _try_logo(story):
-    brand = st.secrets.get("brand", {})
-    logo_url = brand.get("logo_url", "")
-    # 先試遠端 URL；失敗就用本地佔位
-    if logo_url:
-        try:
-            story.append(RLImage(logo_url, width=120, height=120 * 0.28))
-            return
-        except Exception:
-            pass
-    local = os.path.join("assets", "logo_placeholder.png")
-    if os.path.exists(local):
-        try:
-            story.append(RLImage(local, width=120, height=120 * 0.28))
-        except Exception:
-            pass
+# ========= 4) 產生 PDF =========
+def build_pdf(
+    *, 
+    inputs_summary: Dict[str, Any],
+    result_summary: Dict[str, Any],
+    recommendations: Dict[str, Any],
+    comparisons: Dict[str, Any] | None = None
+) -> bytes:
 
-# ---------- 3) 產生 PDF ----------
-def build_pdf(*, inputs_summary: Dict[str, Any], result_summary: Dict[str, Any],
-              recommendations: Dict[str, Any], comparisons: Dict[str, Any] | None = None) -> bytes:
     brand = st.secrets.get("brand", {})
     brand_title = brand.get("title", "Grace Family Office｜永傳家族辦公室")
     footer = brand.get("footer", "")
 
     buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=40, bottomMargin=40)
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=36, rightMargin=36,
+        topMargin=40, bottomMargin=40
+    )
     styles = getSampleStyleSheet()
 
-    # 改掉預設字型，避免段落出現方塊字
+    # 套用中文字型到段落樣式
     styles["Normal"].fontName = BASE_FONT
     styles["Normal"].fontSize = 11
     styles["Heading3"].fontName = BASE_FONT_BOLD
@@ -88,18 +113,12 @@ def build_pdf(*, inputs_summary: Dict[str, Any], result_summary: Dict[str, Any],
     _try_logo(story)
 
     title_style = ParagraphStyle(
-        "TitleTW",
-        parent=styles["Normal"],
-        fontName=BASE_FONT_BOLD,
-        fontSize=18,
-        leading=22,
+        "TitleTW", parent=styles["Normal"],
+        fontName=BASE_FONT_BOLD, fontSize=20, leading=24
     )
     subtitle_style = ParagraphStyle(
-        "SubtitleTW",
-        parent=styles["Normal"],
-        fontName=BASE_FONT,
-        fontSize=12,
-        leading=16,
+        "SubtitleTW", parent=styles["Normal"],
+        fontName=BASE_FONT, fontSize=12, leading=16
     )
 
     story.append(Paragraph(brand_title, title_style))
