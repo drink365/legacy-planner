@@ -26,8 +26,10 @@ def _progressive_tax_from_net_10k(net_10k: int) -> int:
         tax = taxable * 0.10
     elif taxable <= B2:
         tax = 5_621_000 + (taxable - B1) * 0.15
+        # 等價：tax = taxable * 0.15 - 2_210_500
     else:
         tax = 14_052_500 + (taxable - B2) * 0.20
+        # 等價：tax = taxable * 0.20 - 8_431_500
     return int(round(tax / 10_000))  # 回傳萬元
 
 def calculate_estate_tax_2025(
@@ -41,15 +43,24 @@ def calculate_estate_tax_2025(
 ) -> Tuple[int, int, int]:
     """
     回傳 (課稅遺產淨額_萬元, 應納遺產稅_萬元, 扣除總額_萬元)
-    """
-    deduct_10k = FUNERAL_10K
-    if has_spouse:
-        deduct_10k += SPOUSE_DEDUCT_10K
-    deduct_10k += adult_children * ADULT_CHILD_DEDUCT_10K
-    deduct_10k += parents * PARENTS_DEDUCT_10K
-    deduct_10k += disabled_people * DISABLED_DEDUCT_10K
-    deduct_10k += other_dependents * OTHER_DEPENDENTS_10K
 
-    taxable_net_10k = max(total_assets_10k - EXEMPT_10K - deduct_10k, 0)
+    ⚠️ 扣除總額 = 免稅額 + 各項扣除（喪葬、配偶、成年子女、父母、身障、其他受扶養）
+    """
+    # 各項扣除（不含免稅額）
+    deductions_10k = FUNERAL_10K
+    if has_spouse:
+        deductions_10k += SPOUSE_DEDUCT_10K
+    deductions_10k += adult_children * ADULT_CHILD_DEDUCT_10K
+    deductions_10k += parents * PARENTS_DEDUCT_10K
+    deductions_10k += disabled_people * DISABLED_DEDUCT_10K
+    deductions_10k += other_dependents * OTHER_DEPENDENTS_10K
+
+    # 扣除總額（含免稅）
+    deduct_total_10k = EXEMPT_10K + deductions_10k
+
+    # 課稅遺產淨額
+    taxable_net_10k = max(total_assets_10k - deduct_total_10k, 0)
+
+    # 應納稅額（萬元）
     tax_10k = _progressive_tax_from_net_10k(taxable_net_10k)
-    return taxable_net_10k, tax_10k, deduct_10k
+    return taxable_net_10k, tax_10k, deduct_total_10k
