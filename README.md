@@ -77,26 +77,3 @@ lead_capture_and_pdf(
 ```
 
 即可完成：**Email 留存 → 生成品牌化 PDF → 提供下載**。
-
----
-
-## 🧭 官網（Vercel）建議
-
-- 首屏標語：**「高資產家族的數位傳承顧問」**｜**「30 年專業 × AI 智能」**
-- CTA：**開始路徑模擬 → 下載顧問報告**（導到本 Streamlit App）
-- 可在 `.streamlit/secrets` 設定 `brand.invite_code` 啟用邀請制下載。
-
----
-
-## 🛠️ 常見問題
-
-- **Logo 無法出現在 PDF？**  
-  預設使用內建佔位圖；若你填 `brand.logo_url` 為遠端圖片，有時 ReportLab 取圖失敗會自動略過，屬正常。
-
-- **名單沒有寫入？**  
-  檢查 Streamlit Secrets 的 `supabase.url` 與 `supabase.key` 是否正確，且資料表已建立。
-
-- **OpenAI 無回應？**  
-  檢查 `openai.api_key` 與 `openai.model`；可先用 `gpt-4o-mini`。
-
-祝上線順利！
