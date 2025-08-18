@@ -263,25 +263,25 @@ else:
     st.info("尚無資產，請先新增。")
 
 # =============================
-# Step 3: 家族樹（子女依年齡排序；無子女的夫妻不下拉）
+# Step 3: 家族樹（子女依年齡排序；配偶不參與排序；無子女的夫妻不下拉）
 # =============================
 st.header("Step 3. 家族樹（世代清楚、上下分層）")
 
 if st.session_state["family"]:
     dot = Digraph(format="png")
-    # 直角線條、實線、較舒適的間距；不畫箭頭
     dot.attr(rankdir="TB", size="10", splines="ortho", nodesep="0.7", ranksep="1.1")
     dot.attr('edge', arrowhead='none')
 
-    # ---------- 1) 依「關係」分層（純排版） ----------
-    GEN_BY_REL = {
-        "祖父": -2, "祖母": -2,
-        "父親": -1, "母親": -1,
-        "本人": 0, "配偶(現任)": 0, "前配偶": 0, "兄弟": 0, "姊妹": 0, "其他": 0,
-        "子女": 1, "子女之配偶": 1,
-        "孫子": 2, "孫女": 2, "孫輩之配偶": 2,
-    }
-    def _gen(rel: str) -> int: return GEN_BY_REL.get(rel, 0)
+    # ---- 分層（純排版）----
+    def _gen(rel: str) -> int:
+        m = {
+            "祖父": -2, "祖母": -2,
+            "父親": -1, "母親": -1,
+            "本人": 0, "配偶(現任)": 0, "前配偶": 0, "兄弟": 0, "姊妹": 0, "其他": 0,
+            "子女": 1, "子女之配偶": 1,
+            "孫子": 2, "孫女": 2, "孫輩之配偶": 2,
+        }
+        return m.get(rel, 0)
 
     gens = {-2: [], -1: [], 0: [], 1: [], 2: [], 3: []}
     for m in st.session_state["family"]:
@@ -300,7 +300,8 @@ if st.session_state["family"]:
                 fill  = "khaki" if member["relation"] == "本人" else "lightgrey"
                 s.node(member["name"], label, shape="ellipse", style="filled", fillcolor=fill)
 
-    # ---------- 2) 夫妻橫線 & 子女連線 ----------
+    # ---- 夫妻橫線 & 子女連線 ----
+    from collections import defaultdict
     def norm(s): return s.strip() if isinstance(s, str) else ""
     def age_of(name: str) -> int:
         m = next((x for x in st.session_state["family"] if x["name"] == name), None)
@@ -308,74 +309,74 @@ if st.session_state["family"]:
 
     existing = {m["name"] for m in st.session_state["family"]}
 
-    # (a) 從孩子資訊蒐集「父母對」以及「該對的子女列表」
-    from collections import defaultdict
-    children_by_pair = defaultdict(list)       # key=frozenset({f,mo}) -> [child1, child2...]
+    # (a) 由孩子蒐集「父母對」→只放「孩子本人」，不包含其配偶
+    children_by_pair = defaultdict(list)  # key=frozenset({f,mo}) -> [child1, child2...]
     for m in st.session_state["family"]:
         f, mo = norm(m.get("father","")), norm(m.get("mother",""))
         if f in existing and mo in existing and f and mo:
             children_by_pair[frozenset((f, mo))].append(m["name"])
 
-    # (b) 從伴侶關係（unions）蒐集夫妻對（即便暫無子女也要顯示橫線）
+    # (b) 蒐集所有夫妻對（含 unions 與 本人+現任配偶），用來畫橫線
     couple_pairs = set(children_by_pair.keys())
     if "unions" in st.session_state:
         for u in st.session_state["unions"]:
             a, b = norm(u.get("a","")), norm(u.get("b",""))
             if a in existing and b in existing and a and b:
                 couple_pairs.add(frozenset((a, b)))
-
-    # (c) 保險：本人 + 現任配偶也視為一對
     selfs = [x for x in st.session_state["family"] if x["relation"] == "本人"]
     if selfs:
         self_name = selfs[0]["name"]
         for sp in [x for x in st.session_state["family"] if x["relation"] == "配偶(現任)"]:
             couple_pairs.add(frozenset((self_name, sp["name"])))
 
-    # 為每對父母建立「夫妻橫桿」，有子女才建立「垂直幹線」
+    # (c) 每對夫妻：先畫橫線；只有有子女時才畫「垂直幹線」
     pair_to_trunk = {}  # frozenset({f,mo}) -> trunk_id
     for idx, pair in enumerate(sorted(couple_pairs, key=lambda p: sorted(list(p)))):
         f, mo = sorted(list(pair))
-        union_id = f"U{idx}"      # 橫桿
-        kids     = children_by_pair.get(pair, [])
+        union_id = f"U{idx}"
+        kids     = children_by_pair.get(pair, [])  # ✅ 只有「孩子本人」，不含配偶
 
-        # 橫桿（與雙親同層）
         with dot.subgraph() as s:
             s.attr(rank="same")
             s.node(union_id, label="", shape="box",
                    width="0.8", height="0.02", fixedsize="true",
                    style="filled", fillcolor="black", color="black")
-            s.edge(f,  union_id, weight="100")
-            s.edge(union_id, mo, weight="100")
+            # 夫妻橫線
+            if kids:
+                # 有子女 → 這兩條邊參與佈局（保持穩定）
+                s.edge(f,  union_id, weight="100")
+                s.edge(union_id, mo, weight="100")
+            else:
+                # 沒子女 → 只示意橫線，不影響兄弟姊妹排序
+                s.edge(f,  union_id, weight="1", constraint="false")
+                s.edge(union_id, mo, weight="1", constraint="false")
 
-        # 有子女才拉「幹線」往下，否則只保留橫桿（✅符合需求 2）
         if kids:
             trunk_id = f"T{idx}"
             pair_to_trunk[pair] = trunk_id
             dot.node(trunk_id, label="", shape="point", width="0.01")
             dot.edge(union_id, trunk_id, weight="50", minlen="2")
 
-            # 子女依年齡由大到小排序（✅符合需求 1）
+            # ✅ 子女依年齡由大到小排序（不含任何配偶）
             kids_sorted = sorted(kids, key=lambda n: age_of(n), reverse=True)
             for c in kids_sorted:
                 dot.edge(trunk_id, c, weight="2", minlen="1")
 
-            # 用「隱形邊」固定左右順序（左→右），避免 Graphviz 隨機換位
+            # 用隱形邊固定兄弟姊妹的左右順序；配偶不在此串列中，所以不會被排序牽動
             if len(kids_sorted) > 1:
                 for i in range(len(kids_sorted)-1):
                     dot.edge(kids_sorted[i], kids_sorted[i+1],
                              style="invis", weight="100", constraint="true")
 
-    # 對只有「單親資訊」的孩子：仍以單親直連（或若可唯一對應到一組有幹線的父母則接到該幹線）
+    # (d) 對只有「單親資訊」的孩子：唯一可對應到某組父母就掛到該幹線，否則單親直連
     for m in st.session_state["family"]:
         child = m["name"]
         f, mo = norm(m.get("father","")), norm(m.get("mother",""))
         f_ok, mo_ok = f in existing and f, mo in existing and mo
         if f_ok and mo_ok:
-            # 已在上方處理
-            continue
+            continue  # 已處理在上方
         parent = f if f_ok else (mo if mo_ok else "")
         if parent:
-            # 嘗試唯一對應到某組父母（而且那組有幹線）
             candidates = [tr for pair, tr in pair_to_trunk.items() if parent in pair]
             if len(candidates) == 1:
                 dot.edge(candidates[0], child, weight="2", minlen="1")
@@ -385,6 +386,7 @@ if st.session_state["family"]:
     st.graphviz_chart(dot)
 else:
     st.info("請先新增 **家庭成員**。")
+
 
 # =============================
 # 頁尾
