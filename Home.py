@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 from graphviz import Digraph
-import io
 
 # =============================
 # 頁面設定
@@ -13,7 +12,7 @@ st.set_page_config(
 )
 
 st.title("📦 家族盤點｜傳承圖（世代樹）")
-st.markdown("第一步：**盤點家族成員**與**各自的資產**。本頁不做分配與繼承比例，只專注在盤點與關係圖。")
+st.markdown("第一步：**盤點家族成員**與**各自的資產**。本頁不做分配與繼承比例，只專注於盤點與關係圖。")
 
 # =============================
 # Demo 資料（您指定的人名）
@@ -23,8 +22,9 @@ DEMO_FAMILY = [
     {"name": "王春嬌", "relation": "配偶(現任)", "age": 62, "alive": True,  "parent": ""},
     {"name": "陳小明", "relation": "子女",       "age": 35, "alive": True,  "parent": "陳志明"},
     {"name": "陳小芳", "relation": "子女",       "age": 32, "alive": True,  "parent": "陳志明"},
-    # 如要示範孫輩，請新增：{"name":"小明之子","relation":"孫子","age":6,"alive":True,"parent":"陳小明"}
-    # 如有前配偶的孩子，照樣把該子女的 parent 指向「本人」或「前配偶」皆可（僅畫血/法定親子關係）。
+    # 如要示範孫輩，請新增：
+    # {"name":"小明之子","relation":"孫子","age":6,"alive":True,"parent":"陳小明"}
+    # 如有前配偶之子女，直接輸入該子女並把 parent 指向「本人」或「前配偶」皆可（只畫親子關係）
 ]
 
 DEMO_ASSETS = [
@@ -54,7 +54,7 @@ REL_OPTIONS = [
     "其他"
 ]
 
-# 用於家族樹的世代分層（僅用來排版，非法律定義）
+# 用於家族樹的「世代分層」（僅排版用途，非法律定義）
 GEN_BY_REL = {
     "祖父": -2, "祖母": -2,
     "父親": -1, "母親": -1,
@@ -63,7 +63,7 @@ GEN_BY_REL = {
     "孫子": 2, "孫女": 2,
 }
 
-def get_generation(rel: str):
+def get_generation(rel: str) -> int:
     return GEN_BY_REL.get(rel, 0)
 
 # =============================
@@ -84,7 +84,7 @@ with ops_col2:
 st.markdown("---")
 
 # =============================
-# Step 1: 家族成員盤點（只建立關係，不做分配/比例）
+# Step 1: 家族成員盤點
 # =============================
 st.header("Step 1. 家族成員")
 
@@ -99,35 +99,34 @@ with st.form("add_family"):
     with cols[3]:
         alive = st.checkbox("在世", value=True)
     with cols[4]:
-        # 指定「直系卑親屬」的上層（父/母）誰：用來畫樹（單一欄即可，簡化）
-        # 子女/孫子女請選其「直接上層」：子女的 parent 指向本人/配偶/前配偶；孫輩的 parent 指向其父或母（某位「子女」）
         existing_names = [""] + [m["name"] for m in st.session_state["family"]]
         parent = st.selectbox("其上層（父/母）", existing_names)
 
     submitted = st.form_submit_button("➕ 新增成員")
     if submitted and name:
         st.session_state["family"].append({
-            "name": name, "relation": relation, "age": age,
-            "alive": alive, "parent": parent
+            "name": name,
+            "relation": relation,
+            "age": age,
+            "alive": alive,
+            "parent": parent
         })
 
 if st.session_state["family"]:
-    st.subheader("👨‍👩‍👧 家族成員清單")
+    st.subheader("👨‍👩‍👧 家庭成員清單")
     st.table(pd.DataFrame(st.session_state["family"]))
 
     # 刪除成員
     del_name = st.selectbox("選擇要刪除的成員", [""] + [f["name"] for f in st.session_state["family"]])
     if del_name and st.button("❌ 刪除成員"):
-        # 一併移除以他為 parent 的連結（不刪那個人，但提醒使用者）
         children_count = sum(1 for m in st.session_state["family"] if m.get("parent") == del_name)
         st.session_state["family"] = [f for f in st.session_state["family"] if f["name"] != del_name]
-        # 同時把資產擁有者若是此人，資產仍保留（因為只是盤點），由您決定是否手動調整或刪除
         st.success(f"已刪除成員：{del_name}。提醒：有 {children_count} 位成員的上層可能需重新指定。")
 else:
     st.info("尚無家庭成員，請先新增。")
 
 # =============================
-# Step 2: 資產盤點（以「擁有者」為主）
+# Step 2: 各自資產盤點（不做分配）
 # =============================
 st.header("Step 2. 各自資產盤點（不做分配）")
 
@@ -145,7 +144,12 @@ with st.form("add_asset"):
 
     submitted_asset = st.form_submit_button("➕ 新增資產")
     if submitted_asset and members and owner != "（請先新增成員）" and value > 0:
-        st.session_state["assets"].append({"owner": owner, "type": asset_type, "value": value, "note": note})
+        st.session_state["assets"].append({
+            "owner": owner,
+            "type": asset_type,
+            "value": value,
+            "note": note
+        })
 
 if st.session_state["assets"]:
     st.subheader("💰 資產清單（依筆列示）")
@@ -169,7 +173,7 @@ else:
     st.info("尚無資產，請先新增。")
 
 # =============================
-# Step 3: 家族樹（世代向下）
+# Step 3: 家族樹（世代清楚、上下分層）
 # =============================
 st.header("Step 3. 家族樹（世代清楚、上下分層）")
 
@@ -177,7 +181,7 @@ if st.session_state["family"]:
     dot = Digraph(format="png")
     dot.attr(rankdir="TB", size="10")  # Top-to-Bottom
 
-    # 先依關係推估世代，放進不同 rank（單純為視覺清楚）
+    # 依關係推估世代，放進不同 rank（單純為視覺清楚）
     gens = {-2: [], -1: [], 0: [], 1: [], 2: [], 3: []}
     for m in st.session_state["family"]:
         rel = m.get("relation", "")
@@ -198,18 +202,19 @@ if st.session_state["family"]:
                 fill = "khaki" if member["relation"] == "本人" else "lightgrey"
                 s.node(member["name"], label, shape="ellipse", style="filled", fillcolor=fill)
 
-    # 畫「父/母 → 子女」的垂直關係（用 parent 欄位）
+    # 畫「父/母 → 子女」的垂直關係（依 parent 欄位）
     for m in st.session_state["family"]:
-        parent = m.get("parent", "")
-        if parent:
-            dot.edge(parent, m["name"])  # 由上層指向下層
+        parent_name = m.get("parent", "")
+        if parent_name:
+            dot.edge(parent_name, m["name"])  # 由上層指向下層
 
-    # 視覺上把「本人 ↔ 配偶(現任)/前配偶」連一條無箭頭線（僅示意伴侶關係）
-   本人們 = [x for x in st.session_state["family"] if x["relation"] == "本人"]
-    if 本人們:
-        本人名 = 本人們[0]["name"]
-        for sp in [x for x in st.session_state["family"] if x["relation"] in ["配偶(現任)", "前配偶"]]:
-            dot.edge(本人名, sp["name"], dir="none", style="dashed")  # 無箭頭，虛線表示伴侶關係
+    # 視覺化伴侶關係：本人 ↔ 配偶(現任)/前配偶，虛線、無箭頭
+    persons_as_self = [x for x in st.session_state["family"] if x["relation"] == "本人"]
+    if persons_as_self:
+        self_name = persons_as_self[0]["name"]
+        partners = [x for x in st.session_state["family"] if x["relation"] in ["配偶(現任)", "前配偶"]]
+        for sp in partners:
+            dot.edge(self_name, sp["name"], dir="none", style="dashed")
 
     st.graphviz_chart(dot)
 else:
