@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from graphviz import Digraph
+from collections import defaultdict
 
 # =============================
 # 頁面設定
@@ -38,31 +39,12 @@ if "family" not in st.session_state:
 if "assets" not in st.session_state:
     st.session_state["assets"] = DEMO_ASSETS.copy()
 if "unions" not in st.session_state:
-    # 伴侶關係清單：每筆 {"a":姓名, "b":姓名, "type":"現任配偶" 或 "前配偶" 或 "伴侶"}
+    # 伴侶關係清單：每筆 {"a":姓名, "b":姓名, "type":"現任配偶" / "前配偶" / "伴侶"}
     st.session_state["unions"] = []
 
-# ----------------- 小工具 -----------------
-REL_OPTIONS = [
-    "本人", "配偶(現任)", "前配偶",
-    "父親", "母親",
-    "祖父", "祖母",
-    "兄弟", "姊妹",
-    "子女", "子女之配偶",   # 新增：第二代配偶
-    "孫子", "孫女", "孫輩之配偶",  # 選填：若要放第三代配偶
-    "其他"
-]
-
-# 世代分層（單純為排版；若要更準確可改用 BFS 推算）
-GEN_BY_REL = {
-    "祖父": -2, "祖母": -2,
-    "父親": -1, "母親": -1,
-    "本人": 0, "配偶(現任)": 0, "前配偶": 0, "兄弟": 0, "姊妹": 0, "其他": 0,
-    "子女": 1, "子女之配偶": 1,
-    "孫子": 2, "孫女": 2, "孫輩之配偶": 2,
-}
-def get_generation(rel: str) -> int:
-    return GEN_BY_REL.get(rel, 0)
-
+# =============================
+# 小工具與常數
+# =============================
 def normalize(s: str) -> str:
     return s.strip() if isinstance(s, str) else s
 
@@ -73,6 +55,37 @@ def pair_key(a: str, b: str):
     if not a or not b: return None
     a, b = normalize(a), normalize(b)
     return tuple(sorted([a, b])) if a != b else None
+
+# ---- 舊資料相容（如果有 parent 欄位） ----
+for m in st.session_state["family"]:
+    m["name"]   = normalize(m.get("name", ""))
+    m["father"] = normalize(m.get("father", ""))
+    m["mother"] = normalize(m.get("mother", ""))
+    if m.get("parent") and not (m["father"] or m["mother"]):
+        m["father"] = normalize(m["parent"])
+
+# ---- 關係選項 & 分層 ----
+REL_OPTIONS = [
+    "本人", "配偶(現任)", "前配偶",
+    "父親", "母親",
+    "祖父", "祖母",
+    "兄弟", "姊妹",
+    "子女", "子女之配偶", "子女的配偶",
+    "孫子", "孫女", "孫輩之配偶", "孫輩的配偶",
+    "其他"
+]
+SPOUSE_REL_CHILD = {"子女之配偶", "子女的配偶"}
+SPOUSE_REL_GRAND = {"孫輩之配偶", "孫輩的配偶"}
+
+GEN_BY_REL = {
+    "祖父": -2, "祖母": -2,
+    "父親": -1, "母親": -1,
+    "本人": 0, "配偶(現任)": 0, "前配偶": 0, "兄弟": 0, "姊妹": 0, "其他": 0,
+    "子女": 1, "子女之配偶": 1, "子女的配偶": 1,
+    "孫子": 2, "孫女": 2, "孫輩之配偶": 2, "孫輩的配偶": 2,
+}
+def get_generation(rel: str) -> int:
+    return GEN_BY_REL.get(rel, 0)
 
 # =============================
 # 快捷操作：重置／載入示範
@@ -94,7 +107,7 @@ with c2:
 st.markdown("---")
 
 # =============================
-# Step 1: 家族成員（子女之配偶可直接指定配偶對象）
+# Step 1: 家族成員（子女/孫輩之配偶可直接指定配偶對象）
 # =============================
 st.header("Step 1. 家族成員")
 
@@ -107,11 +120,7 @@ with st.form("add_family"):
     with cols[0]:
         name = st.text_input("姓名")
     with cols[1]:
-        relation = st.selectbox(
-            "關係",
-            REL_OPTIONS,
-            index=REL_OPTIONS.index("子女") if "子女" in REL_OPTIONS else 0
-        )
+        relation = st.selectbox("關係", REL_OPTIONS, index=REL_OPTIONS.index("子女"))
     with cols[2]:
         age = st.number_input("年齡", min_value=0, max_value=120, step=1)
     with cols[3]:
@@ -121,17 +130,21 @@ with st.form("add_family"):
     with cols[5]:
         mother = st.selectbox("母親（可留空）", [""] + all_names)
 
-    # ✅ 只有在新增「子女之配偶 / 孫輩之配偶」時，顯示對應的配偶對象選擇
+    # 永遠顯示（避免 form 在同一輪內不重繪），不需要時禁用
     with cols[6]:
-        spouse_target_child = ""
-        spouse_target_grand = ""
-        if relation == "子女之配偶":
-            spouse_target_child = st.selectbox("配偶對象（子女）", [""] + children_names)
-        elif relation == "孫輩之配偶":
-            spouse_target_grand = st.selectbox("配偶對象（孫輩）", [""] + grand_names)
-
+        spouse_target_child = st.selectbox(
+            "配偶對象（子女）",
+            [""] + children_names,
+            disabled=(relation not in SPOUSE_REL_CHILD),
+            key="spouse_target_child"
+        )
     with cols[7]:
-        st.write("")  # 佔位
+        spouse_target_grand = st.selectbox(
+            "配偶對象（孫輩）",
+            [""] + grand_names,
+            disabled=(relation not in SPOUSE_REL_GRAND),
+            key="spouse_target_grand"
+        )
     with cols[8]:
         submitted = st.form_submit_button("➕ 新增成員")
 
@@ -151,19 +164,17 @@ with st.form("add_family"):
         spouse_target_child = _norm(spouse_target_child)
         spouse_target_grand = _norm(spouse_target_grand)
 
-        # 基本檢查
         if not name:
             st.error("請輸入姓名。")
         elif _name_exists(name):
             st.error(f"成員「{name}」已存在，為避免混淆請改用不同名稱（或加註稱謂）。")
         elif relation in ["子女", "孫子", "孫女"] and (not father and not mother):
             st.error("子女/孫輩至少需指定一位父或母，才能正確掛在家族樹下。")
-        elif relation == "子女之配偶" and not spouse_target_child:
+        elif relation in SPOUSE_REL_CHILD and not spouse_target_child:
             st.error("請選擇『配偶對象（子女）』，才能與指定子女連線。")
-        elif relation == "孫輩之配偶" and not spouse_target_grand:
+        elif relation in SPOUSE_REL_GRAND and not spouse_target_grand:
             st.error("請選擇『配偶對象（孫輩）』，才能與指定孫輩連線。")
         else:
-            # 寫入成員
             st.session_state["family"].append({
                 "name": name,
                 "relation": relation,
@@ -174,25 +185,19 @@ with st.form("add_family"):
             })
             st.success(f"已新增：{name}")
 
-            # ✅ 自動建立伴侶配對（用於畫出夫妻橫桿＋垂直幹線）
-            if "unions" not in st.session_state:
-                st.session_state["unions"] = []
-
-            # 子女之配偶 → 與所選子女建立「現任配偶」關係
-            if relation == "子女之配偶" and spouse_target_child:
+            # 自動建立伴侶配對（夫妻橫桿＋幹線）
+            if relation in SPOUSE_REL_CHILD and spouse_target_child:
                 key = _pair_key(name, spouse_target_child)
                 if key and not any(_pair_key(u["a"], u["b"]) == key for u in st.session_state["unions"]):
                     st.session_state["unions"].append({"a": key[0], "b": key[1], "type": "現任配偶"})
                     st.info(f"已自動配對：{key[0]} ↔ {key[1]}（現任配偶）")
-
-            # 孫輩之配偶 → 與所選孫輩建立「現任配偶」關係（如有使用）
-            if relation == "孫輩之配偶" and spouse_target_grand:
+            if relation in SPOUSE_REL_GRAND and spouse_target_grand:
                 key = _pair_key(name, spouse_target_grand)
                 if key and not any(_pair_key(u["a"], u["b"]) == key for u in st.session_state["unions"]):
                     st.session_state["unions"].append({"a": key[0], "b": key[1], "type": "現任配偶"})
                     st.info(f"已自動配對：{key[0]} ↔ {key[1]}（現任配偶）")
 
-# 顯示清單 + 刪除維持不變（你的原本程式即可）
+# 成員清單 & 刪除
 if st.session_state["family"]:
     st.subheader("👨‍👩‍👧 家庭成員清單")
     df_family = pd.DataFrame(st.session_state["family"])
@@ -202,25 +207,66 @@ if st.session_state["family"]:
 
     del_name = st.selectbox("選擇要刪除的成員", [""] + [f["name"] for f in st.session_state["family"]])
     if del_name and st.button("❌ 刪除成員"):
-        del_name_norm = del_name.strip()
+        del_name_norm = normalize(del_name)
         affected = 0
         for m in st.session_state["family"]:
             changed = False
-            if (m.get("father") or "") == del_name_norm:
+            if normalize(m.get("father", "")) == del_name_norm:
                 m["father"] = ""; changed = True
-            if (m.get("mother") or "") == del_name_norm:
+            if normalize(m.get("mother", "")) == del_name_norm:
                 m["mother"] = ""; changed = True
             if changed: affected += 1
-        # 同步清理伴侶配對
-        if "unions" in st.session_state:
-            st.session_state["unions"] = [
-                u for u in st.session_state["unions"]
-                if del_name_norm not in (u["a"], u["b"])
-            ]
-        st.session_state["family"] = [f for f in st.session_state["family"] if f["name"] != del_name_norm]
+        # 清理配對
+        st.session_state["unions"] = [u for u in st.session_state["unions"]
+                                      if del_name_norm not in (normalize(u["a"]), normalize(u["b"]))]
+        # 刪除本人
+        st.session_state["family"] = [f for f in st.session_state["family"] if normalize(f["name"]) != del_name_norm]
         st.warning(f"已刪除成員：{del_name}。提醒：有 {affected} 位成員的父/母欄位已自動清空，並同步移除相關的伴侶關係。")
 else:
     st.info("尚無家庭成員，請先新增。")
+
+# =============================
+# Step 1b: 伴侶關係（手動新增/刪除）
+# =============================
+st.header("Step 1b. 伴侶關係（含第二代配偶）")
+
+member_names = [m["name"] for m in st.session_state["family"]]
+with st.form("add_union"):
+    c = st.columns(4)
+    with c[0]:
+        ua = st.selectbox("成員 A", member_names if member_names else ["（請先新增成員）"])
+    with c[1]:
+        ub = st.selectbox("成員 B", member_names if member_names else ["（請先新增成員）"])
+    with c[2]:
+        utype = st.selectbox("關係類型", ["現任配偶", "前配偶", "伴侶"])
+    with c[3]:
+        submitted_u = st.form_submit_button("➕ 新增配對")
+
+    if submitted_u:
+        if not member_names or ua == "（請先新增成員）" or ub == "（請先新增成員）":
+            st.error("請先新增成員，再建立配對。")
+        else:
+            key = pair_key(ua, ub)
+            if not key:
+                st.error("成員 A 與成員 B 需為兩位不同的人。")
+            elif any(pair_key(u["a"], u["b"]) == key for u in st.session_state["unions"]):
+                st.error("這兩位的配對已存在。")
+            else:
+                st.session_state["unions"].append({"a": key[0], "b": key[1], "type": utype})
+                st.success(f"已建立配對：{key[0]} ↔ {key[1]}（{utype}）")
+
+if st.session_state["unions"]:
+    st.subheader("💞 伴侶關係清單")
+    st.table(pd.DataFrame(st.session_state["unions"]))
+    # 刪除配對
+    label_pairs = [""] + [f"{i}｜{u['a']} ↔ {u['b']}｜{u['type']}" for i, u in enumerate(st.session_state["unions"])]
+    chosen_pair = st.selectbox("選擇要刪除的配對", label_pairs)
+    if chosen_pair and st.button("❌ 刪除配對"):
+        idx = int(chosen_pair.split("｜", 1)[0])
+        removed = st.session_state["unions"].pop(idx)
+        st.success(f"已刪除配對：{removed['a']} ↔ {removed['b']}（{removed['type']}）")
+
+st.markdown("---")
 
 # =============================
 # Step 2: 各自資產盤點（不做分配）
@@ -269,23 +315,14 @@ st.header("Step 3. 家族樹（世代清楚、上下分層）")
 
 if st.session_state["family"]:
     dot = Digraph(format="png")
+    # 直角線條、實線、較舒適的間距；不畫箭頭
     dot.attr(rankdir="TB", size="10", splines="ortho", nodesep="0.7", ranksep="1.1")
     dot.attr('edge', arrowhead='none')
 
     # ---- 分層（純排版）----
-    def _gen(rel: str) -> int:
-        m = {
-            "祖父": -2, "祖母": -2,
-            "父親": -1, "母親": -1,
-            "本人": 0, "配偶(現任)": 0, "前配偶": 0, "兄弟": 0, "姊妹": 0, "其他": 0,
-            "子女": 1, "子女之配偶": 1,
-            "孫子": 2, "孫女": 2, "孫輩之配偶": 2,
-        }
-        return m.get(rel, 0)
-
     gens = {-2: [], -1: [], 0: [], 1: [], 2: [], 3: []}
     for m in st.session_state["family"]:
-        gens.setdefault(_gen(m.get("relation","")), []).append(m["name"])
+        gens.setdefault(get_generation(m.get("relation","")), []).append(m["name"])
 
     for g, names in sorted(gens.items()):
         if not names: 
@@ -300,9 +337,6 @@ if st.session_state["family"]:
                 fill  = "khaki" if member["relation"] == "本人" else "lightgrey"
                 s.node(member["name"], label, shape="ellipse", style="filled", fillcolor=fill)
 
-    # ---- 夫妻橫線 & 子女連線 ----
-    from collections import defaultdict
-    def norm(s): return s.strip() if isinstance(s, str) else ""
     def age_of(name: str) -> int:
         m = next((x for x in st.session_state["family"] if x["name"] == name), None)
         return int(m.get("age", 0)) if m else 0
@@ -312,17 +346,16 @@ if st.session_state["family"]:
     # (a) 由孩子蒐集「父母對」→只放「孩子本人」，不包含其配偶
     children_by_pair = defaultdict(list)  # key=frozenset({f,mo}) -> [child1, child2...]
     for m in st.session_state["family"]:
-        f, mo = norm(m.get("father","")), norm(m.get("mother",""))
+        f, mo = normalize(m.get("father","")), normalize(m.get("mother",""))
         if f in existing and mo in existing and f and mo:
             children_by_pair[frozenset((f, mo))].append(m["name"])
 
     # (b) 蒐集所有夫妻對（含 unions 與 本人+現任配偶），用來畫橫線
     couple_pairs = set(children_by_pair.keys())
-    if "unions" in st.session_state:
-        for u in st.session_state["unions"]:
-            a, b = norm(u.get("a","")), norm(u.get("b",""))
-            if a in existing and b in existing and a and b:
-                couple_pairs.add(frozenset((a, b)))
+    for u in st.session_state["unions"]:
+        a, b = normalize(u.get("a","")), normalize(u.get("b",""))
+        if a in existing and b in existing and a and b:
+            couple_pairs.add(frozenset((a, b)))
     selfs = [x for x in st.session_state["family"] if x["relation"] == "本人"]
     if selfs:
         self_name = selfs[0]["name"]
@@ -334,7 +367,7 @@ if st.session_state["family"]:
     for idx, pair in enumerate(sorted(couple_pairs, key=lambda p: sorted(list(p)))):
         f, mo = sorted(list(pair))
         union_id = f"U{idx}"
-        kids     = children_by_pair.get(pair, [])  # ✅ 只有「孩子本人」，不含配偶
+        kids     = children_by_pair.get(pair, [])  # ✅ 只有孩子本人，不含配偶
 
         with dot.subgraph() as s:
             s.attr(rank="same")
@@ -343,11 +376,10 @@ if st.session_state["family"]:
                    style="filled", fillcolor="black", color="black")
             # 夫妻橫線
             if kids:
-                # 有子女 → 這兩條邊參與佈局（保持穩定）
                 s.edge(f,  union_id, weight="100")
                 s.edge(union_id, mo, weight="100")
             else:
-                # 沒子女 → 只示意橫線，不影響兄弟姊妹排序
+                # 沒子女 → 只示意橫線，不干擾整體排序
                 s.edge(f,  union_id, weight="1", constraint="false")
                 s.edge(union_id, mo, weight="1", constraint="false")
 
@@ -357,21 +389,21 @@ if st.session_state["family"]:
             dot.node(trunk_id, label="", shape="point", width="0.01")
             dot.edge(union_id, trunk_id, weight="50", minlen="2")
 
-            # ✅ 子女依年齡由大到小排序（不含任何配偶）
+            # ✅ 子女依年齡由大到小排序（左→右），配偶不納入排序
             kids_sorted = sorted(kids, key=lambda n: age_of(n), reverse=True)
             for c in kids_sorted:
                 dot.edge(trunk_id, c, weight="2", minlen="1")
 
-            # 用隱形邊固定兄弟姊妹的左右順序；配偶不在此串列中，所以不會被排序牽動
+            # 隱形邊固定兄弟姊妹左右順序
             if len(kids_sorted) > 1:
                 for i in range(len(kids_sorted)-1):
                     dot.edge(kids_sorted[i], kids_sorted[i+1],
                              style="invis", weight="100", constraint="true")
 
-    # (d) 對只有「單親資訊」的孩子：唯一可對應到某組父母就掛到該幹線，否則單親直連
+    # (d) 只有單親資訊的孩子：唯一可對應到某組父母就掛到該幹線，否則單親直連
     for m in st.session_state["family"]:
         child = m["name"]
-        f, mo = norm(m.get("father","")), norm(m.get("mother",""))
+        f, mo = normalize(m.get("father","")), normalize(m.get("mother",""))
         f_ok, mo_ok = f in existing and f, mo in existing and mo
         if f_ok and mo_ok:
             continue  # 已處理在上方
@@ -387,13 +419,12 @@ if st.session_state["family"]:
 else:
     st.info("請先新增 **家庭成員**。")
 
-
 # =============================
-# 頁尾
+# 頁尾（可點擊連結）
 # =============================
 st.markdown("---")
 st.markdown("""
 《影響力》傳承策略平台｜永傳家族辦公室  
-🌐 gracefo.com  
-📩 聯絡信箱：123@gracefo.com
+🌐 [gracefo.com](https://gracefo.com)  
+📩 [123@gracefo.com](mailto:123@gracefo.com)
 """)
