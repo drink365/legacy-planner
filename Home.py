@@ -22,7 +22,7 @@ DEMO_FAMILY = [
     {"name": "王春嬌", "relation": "配偶(現任)", "age": 62, "alive": True,  "father": "",       "mother": ""},
     {"name": "陳小明", "relation": "子女",       "age": 35, "alive": True,  "father": "陳志明", "mother": "王春嬌"},
     {"name": "陳小芳", "relation": "子女",       "age": 32, "alive": True,  "father": "陳志明", "mother": "王春嬌"},
-    # 如要示範孫輩，請新增：
+    # 例如孫輩：
     # {"name":"小明之子","relation":"孫子","age":6,"alive":True,"father":"陳小明","mother":""}
 ]
 
@@ -41,17 +41,8 @@ if "family" not in st.session_state:
 if "assets" not in st.session_state:
     st.session_state["assets"] = DEMO_ASSETS.copy()
 
-# --- 向下相容：如舊資料有 parent 欄位，自動升級到 father（僅避免空值） ---
-for m in st.session_state["family"]:
-    if "father" not in m:
-        m["father"] = ""
-    if "mother" not in m:
-        m["mother"] = ""
-    if m.get("parent") and not (m["father"] or m["mother"]):
-        m["father"] = m["parent"]
-
 # =============================
-# 常數與小工具
+# 小工具
 # =============================
 REL_OPTIONS = [
     "本人", "配偶(現任)", "前配偶",
@@ -62,7 +53,6 @@ REL_OPTIONS = [
     "其他"
 ]
 
-# 世代分層（排版用途）
 GEN_BY_REL = {
     "祖父": -2, "祖母": -2,
     "父親": -1, "母親": -1,
@@ -74,8 +64,23 @@ GEN_BY_REL = {
 def get_generation(rel: str) -> int:
     return GEN_BY_REL.get(rel, 0)
 
+def normalize(s: str) -> str:
+    return s.strip() if isinstance(s, str) else s
+
 def name_exists(n: str) -> bool:
     return any(m["name"] == n for m in st.session_state["family"])
+
+# ---- 向下相容：把舊資料的 parent 升級並做名字正規化 ----
+for m in st.session_state["family"]:
+    # 名字正規化
+    m["name"]   = normalize(m.get("name", ""))
+    m["father"] = normalize(m.get("father", ""))
+    m["mother"] = normalize(m.get("mother", ""))
+    # 舊 parent 轉到 father（僅在父母都空時）
+    if m.get("parent"):
+        p = normalize(m["parent"])
+        if not (m["father"] or m["mother"]):
+            m["father"] = p
 
 # =============================
 # 快捷操作：重置／載入示範
@@ -95,7 +100,7 @@ with c2:
 st.markdown("---")
 
 # =============================
-# Step 1: 家族成員盤點（father/mother 皆可指定；父母名單永遠列出所有成員）
+# Step 1: 家族成員盤點（父/母可同時指定；名單永遠列出全部成員）
 # =============================
 st.header("Step 1. 家族成員")
 
@@ -120,8 +125,10 @@ with st.form("add_family"):
 
     submitted = st.form_submit_button("➕ 新增成員")
 
-    # 防呆：重名、以及子女/孫輩至少需指定一位父或母
     if submitted:
+        name   = normalize(name)
+        father = normalize(father)
+        mother = normalize(mother)
         if not name:
             st.error("請輸入姓名。")
         elif name_exists(name):
@@ -146,13 +153,28 @@ if st.session_state["family"]:
     df_family = df_family.reindex(columns=[c for c in display_cols if c in df_family.columns])
     st.table(df_family)
 
-    # 刪除成員
+    # 刪除成員（會自動清理他人 father/mother/parent 指向）
     del_name = st.selectbox("選擇要刪除的成員", [""] + [f["name"] for f in st.session_state["family"]])
     if del_name and st.button("❌ 刪除成員"):
-        affected = sum(1 for m in st.session_state["family"]
-                       if m.get("father") == del_name or m.get("mother") == del_name)
-        st.session_state["family"] = [f for f in st.session_state["family"] if f["name"] != del_name]
-        st.warning(f"已刪除成員：{del_name}。提醒：有 {affected} 位成員的父/母欄位可能需要重新指定。")
+        del_name_norm = normalize(del_name)
+        affected = 0
+        for m in st.session_state["family"]:
+            changed = False
+            if normalize(m.get("father", "")) == del_name_norm:
+                m["father"] = ""
+                changed = True
+            if normalize(m.get("mother", "")) == del_name_norm:
+                m["mother"] = ""
+                changed = True
+            # 兼容舊 parent 欄位
+            if normalize(m.get("parent", "")) == del_name_norm:
+                m["parent"] = ""
+                changed = True
+            if changed:
+                affected += 1
+        # 刪除本人
+        st.session_state["family"] = [f for f in st.session_state["family"] if normalize(f["name"]) != del_name_norm]
+        st.warning(f"已刪除成員：{del_name}。提醒：有 {affected} 位成員的父/母欄位已自動清空，請視需要重新指定。")
 else:
     st.info("尚無家庭成員，請先新增。")
 
@@ -175,21 +197,24 @@ with st.form("add_asset"):
 
     submitted_asset = st.form_submit_button("➕ 新增資產")
     if submitted_asset and member_names and owner != "（請先新增成員）" and value > 0:
-        st.session_state["assets"].append({"owner": owner, "type": asset_type, "value": value, "note": note})
+        st.session_state["assets"].append({
+            "owner": normalize(owner),
+            "type": asset_type,
+            "value": value,
+            "note": note
+        })
         st.success(f"已新增資產：{owner}｜{asset_type}｜{value:,}")
 
 if st.session_state["assets"]:
     st.subheader("💰 資產清單（依筆列示）")
     st.table(pd.DataFrame(st.session_state["assets"]))
 
-    # 每人合計
     df_assets = pd.DataFrame(st.session_state["assets"])
     by_owner = df_assets.groupby("owner")["value"].sum().reset_index().sort_values("value", ascending=False)
     by_owner.columns = ["擁有者", "合計金額"]
     st.subheader("📊 各成員資產合計")
     st.table(by_owner)
 
-    # 刪除資產
     labels = [""] + [f"{i}｜{a['owner']}｜{a['type']}｜{a['value']:,}" for i, a in enumerate(st.session_state["assets"])]
     chosen = st.selectbox("選擇要刪除的資產", labels)
     if chosen and st.button("❌ 刪除資產"):
@@ -208,13 +233,12 @@ if st.session_state["family"]:
     dot = Digraph(format="png")
     dot.attr(rankdir="TB", size="10")  # Top-to-Bottom
 
-    # 依關係推估世代，放進不同 rank（排版清楚）
+    # 分層（依「關係」推估；若要更精準可改父母關係 BFS 推導）
     gens = {-2: [], -1: [], 0: [], 1: [], 2: [], 3: []}
     for m in st.session_state["family"]:
         g = get_generation(m.get("relation", ""))
         gens.setdefault(g, []).append(m["name"])
 
-    # 同世代放同一 rank
     for g, names in sorted(gens.items()):
         if not names:
             continue
@@ -236,7 +260,7 @@ if st.session_state["family"]:
         if m.get("mother") and m["mother"] in existing:
             dot.edge(m["mother"], m["name"])
 
-    # 視覺化伴侶關係：本人 ↔ 配偶(現任)/前配偶（虛線無箭頭）
+    # 伴侶關係（僅示意）
     selfs = [x for x in st.session_state["family"] if x["relation"] == "本人"]
     if selfs:
         self_name = selfs[0]["name"]
