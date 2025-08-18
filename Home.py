@@ -41,16 +41,17 @@ if "family" not in st.session_state:
 if "assets" not in st.session_state:
     st.session_state["assets"] = DEMO_ASSETS.copy()
 
-# --- 向下相容：把舊資料的 parent 欄位自動升級為 father ---
+# --- 向下相容：如舊資料有 parent 欄位，自動升級到 father（僅避免空值） ---
 for m in st.session_state["family"]:
-    if "father" not in m: m["father"] = ""
-    if "mother" not in m: m["mother"] = ""
-    # 如舊版有 parent 欄位且 father/mother 都空，則暫存到 father
+    if "father" not in m:
+        m["father"] = ""
+    if "mother" not in m:
+        m["mother"] = ""
     if m.get("parent") and not (m["father"] or m["mother"]):
         m["father"] = m["parent"]
 
 # =============================
-# 常數
+# 常數與小工具
 # =============================
 REL_OPTIONS = [
     "本人", "配偶(現任)", "前配偶",
@@ -69,11 +70,9 @@ GEN_BY_REL = {
     "子女": 1,
     "孫子": 2, "孫女": 2,
 }
+
 def get_generation(rel: str) -> int:
     return GEN_BY_REL.get(rel, 0)
-
-def names_by_relation(rel: str):
-    return [m["name"] for m in st.session_state["family"] if m["relation"] == rel]
 
 def name_exists(n: str) -> bool:
     return any(m["name"] == n for m in st.session_state["family"])
@@ -96,9 +95,11 @@ with c2:
 st.markdown("---")
 
 # =============================
-# Step 1: 家族成員盤點（father/mother 皆可指定）
+# Step 1: 家族成員盤點（father/mother 皆可指定；父母名單永遠列出所有成員）
 # =============================
 st.header("Step 1. 家族成員")
+
+all_names = [m["name"] for m in st.session_state["family"]]
 
 with st.form("add_family"):
     cols = st.columns(7)
@@ -110,18 +111,12 @@ with st.form("add_family"):
         age = st.number_input("年齡", min_value=0, max_value=120, step=1)
     with cols[3]:
         alive = st.checkbox("在世", value=True)
-
-    # 父/母名單：孫輩時預設只列「子女」層的人名，其他關係則列出所有已存在成員
-    candidates_for_parents = [m["name"] for m in st.session_state["family"]]
-    if relation in ["孫子", "孫女"]:
-        candidates_for_parents = names_by_relation("子女") or candidates_for_parents
-
     with cols[4]:
-        father = st.selectbox("父親（可留空）", [""] + candidates_for_parents)
+        father = st.selectbox("父親（可留空）", [""] + all_names)
     with cols[5]:
-        mother = st.selectbox("母親（可留空）", [""] + candidates_for_parents)
+        mother = st.selectbox("母親（可留空）", [""] + all_names)
     with cols[6]:
-        st.write("")  # 占位
+        st.write("")  # 佔位
 
     submitted = st.form_submit_button("➕ 新增成員")
 
@@ -147,13 +142,15 @@ with st.form("add_family"):
 if st.session_state["family"]:
     st.subheader("👨‍👩‍👧 家庭成員清單")
     df_family = pd.DataFrame(st.session_state["family"])
+    display_cols = ["name", "relation", "age", "alive", "father", "mother"]
+    df_family = df_family.reindex(columns=[c for c in display_cols if c in df_family.columns])
     st.table(df_family)
 
     # 刪除成員
     del_name = st.selectbox("選擇要刪除的成員", [""] + [f["name"] for f in st.session_state["family"]])
     if del_name and st.button("❌ 刪除成員"):
-        # 提醒：子女若指向此父/母，需手動調整
-        affected = sum(1 for m in st.session_state["family"] if m.get("father") == del_name or m.get("mother") == del_name)
+        affected = sum(1 for m in st.session_state["family"]
+                       if m.get("father") == del_name or m.get("mother") == del_name)
         st.session_state["family"] = [f for f in st.session_state["family"] if f["name"] != del_name]
         st.warning(f"已刪除成員：{del_name}。提醒：有 {affected} 位成員的父/母欄位可能需要重新指定。")
 else:
