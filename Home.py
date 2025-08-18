@@ -225,52 +225,89 @@ else:
     st.info("尚無資產，請先新增。")
 
 # =============================
-# Step 3: 家族樹（父母皆可掛線；世代上下分層）
+# Step 3: 家族樹（避免交錯：父母→婚姻節點→子女）
 # =============================
 st.header("Step 3. 家族樹（世代清楚、上下分層）")
 
 if st.session_state["family"]:
     dot = Digraph(format="png")
-    dot.attr(rankdir="TB", size="10")  # Top-to-Bottom
+    # 讓連線比較端正、節點間距更舒服
+    dot.attr(rankdir="TB", size="10", splines="ortho", nodesep="0.6", ranksep="1.0")
 
-    # 分層（依「關係」推估；若要更精準可改父母關係 BFS 推導）
+    # 1) 依關係放進不同 rank（單純為視覺清楚）
+    GEN_BY_REL = {
+        "祖父": -2, "祖母": -2,
+        "父親": -1, "母親": -1,
+        "本人": 0, "配偶(現任)": 0, "前配偶": 0, "兄弟": 0, "姊妹": 0, "其他": 0,
+        "子女": 1, "孫子": 2, "孫女": 2,
+    }
+    def _gen(rel: str) -> int: return GEN_BY_REL.get(rel, 0)
+
     gens = {-2: [], -1: [], 0: [], 1: [], 2: [], 3: []}
     for m in st.session_state["family"]:
-        g = get_generation(m.get("relation", ""))
-        gens.setdefault(g, []).append(m["name"])
+        gens.setdefault(_gen(m.get("relation","")), []).append(m["name"])
 
     for g, names in sorted(gens.items()):
-        if not names:
-            continue
+        if not names: continue
         with dot.subgraph() as s:
             s.attr(rank="same")
             for n in names:
                 member = next((x for x in st.session_state["family"] if x["name"] == n), None)
-                if not member:
-                    continue
+                if not member: continue
                 label = f"{member['name']} ({member['relation']}{'' if member.get('alive', True) else '・不在世'})"
-                fill = "khaki" if member["relation"] == "本人" else "lightgrey"
+                fill  = "khaki" if member["relation"] == "本人" else "lightgrey"
                 s.node(member["name"], label, shape="ellipse", style="filled", fillcolor=fill)
 
-    # 以 father/mother 連線（同時掛在父與母底下）
+    # 2) 建立「父母→婚姻節點→子女」結構，避免交錯
     existing = {m["name"] for m in st.session_state["family"]}
-    for m in st.session_state["family"]:
-        if m.get("father") and m["father"] in existing:
-            dot.edge(m["father"], m["name"])
-        if m.get("mother") and m["mother"] in existing:
-            dot.edge(m["mother"], m["name"])
 
-    # 伴侶關係（僅示意）
+    # 蒐集：同一對父母的孩子們
+    couple_children = {}          # {(father, mother): [child1, child2, ...]}
+    single_parent_edges = []      # [(parent, child)]
+
+    def _ckey(f, mo):
+        # 父母鍵用固定排序，避免重複
+        return tuple(sorted([f, mo]))
+
+    for m in st.session_state["family"]:
+        child = m["name"]
+        f = m.get("father", "")
+        mo = m.get("mother", "")
+        f_ok, mo_ok = f in existing, mo in existing
+        if f_ok and mo_ok:
+            couple_children.setdefault(_ckey(f, mo), []).append(child)
+        elif f_ok or mo_ok:
+            single_parent_edges.append((f if f_ok else mo, child))
+
+    # 為每一對父母建立一個婚姻節點（小圓點），把兩位父母與它放在同一 rank，再由它往下接孩子
+    union_idx = 0
+    for (f, mo), kids in couple_children.items():
+        union_id = f"U{union_idx}"; union_idx += 1
+        with dot.subgraph() as s:
+            s.attr(rank="same")
+            s.node(union_id, label="", shape="point", width="0.01")
+            s.edge(f, union_id, dir="none", weight="10")
+            s.edge(union_id, mo, dir="none", weight="10")
+        for c in kids:
+            dot.edge(union_id, c, weight="2", minlen="1")
+
+    # 只有單親資訊時，直接由該家長連到孩子
+    for p, c in single_parent_edges:
+        dot.edge(p, c, weight="2")
+
+    # 3) 伴侶關係（僅示意，不影響排版）：本人 ↔ 配偶(現任)/前配偶
     selfs = [x for x in st.session_state["family"] if x["relation"] == "本人"]
     if selfs:
         self_name = selfs[0]["name"]
         partners = [x for x in st.session_state["family"] if x["relation"] in ["配偶(現任)", "前配偶"]]
         for sp in partners:
-            dot.edge(self_name, sp["name"], dir="none", style="dashed")
+            # constraint=false 讓虛線不干擾版面計算
+            dot.edge(self_name, sp["name"], dir="none", style="dashed", constraint="false")
 
     st.graphviz_chart(dot)
 else:
     st.info("請先新增 **家庭成員**。")
+
 
 # =============================
 # 頁尾
