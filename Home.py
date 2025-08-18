@@ -225,16 +225,16 @@ else:
     st.info("尚無資產，請先新增。")
 
 # =============================
-# Step 3: 家族樹（避免交錯：父母→婚姻節點→子女）
+# Step 3: 家族樹（避免交錯：父母→婚姻節點→子女；單親也能聰明對齊）
 # =============================
 st.header("Step 3. 家族樹（世代清楚、上下分層）")
 
 if st.session_state["family"]:
     dot = Digraph(format="png")
-    # 讓連線比較端正、節點間距更舒服
+    # 讓連線端正、間距舒服
     dot.attr(rankdir="TB", size="10", splines="ortho", nodesep="0.6", ranksep="1.0")
 
-    # 1) 依關係放進不同 rank（單純為視覺清楚）
+    # 1) 依「關係」做分層（純排版用途）
     GEN_BY_REL = {
         "祖父": -2, "祖母": -2,
         "父親": -1, "母親": -1,
@@ -248,65 +248,82 @@ if st.session_state["family"]:
         gens.setdefault(_gen(m.get("relation","")), []).append(m["name"])
 
     for g, names in sorted(gens.items()):
-        if not names: continue
+        if not names: 
+            continue
         with dot.subgraph() as s:
             s.attr(rank="same")
             for n in names:
                 member = next((x for x in st.session_state["family"] if x["name"] == n), None)
-                if not member: continue
+                if not member: 
+                    continue
                 label = f"{member['name']} ({member['relation']}{'' if member.get('alive', True) else '・不在世'})"
                 fill  = "khaki" if member["relation"] == "本人" else "lightgrey"
                 s.node(member["name"], label, shape="ellipse", style="filled", fillcolor=fill)
 
-    # 2) 建立「父母→婚姻節點→子女」結構，避免交錯
+    # 2) 蒐集父母→孩子關係
+    def norm(s):
+        return s.strip() if isinstance(s, str) else s
+
     existing = {m["name"] for m in st.session_state["family"]}
 
-    # 蒐集：同一對父母的孩子們
-    couple_children = {}          # {(father, mother): [child1, child2, ...]}
-    single_parent_edges = []      # [(parent, child)]
-
-    def _ckey(f, mo):
-        # 父母鍵用固定排序，避免重複
-        return tuple(sorted([f, mo]))
-
+    # 已知「父母對」：孩子同時有 father 與 mother
+    couple_pairs = set()   # set of frozenset({father, mother})
     for m in st.session_state["family"]:
-        child = m["name"]
-        f = m.get("father", "")
-        mo = m.get("mother", "")
-        f_ok, mo_ok = f in existing, mo in existing
-        if f_ok and mo_ok:
-            couple_children.setdefault(_ckey(f, mo), []).append(child)
-        elif f_ok or mo_ok:
-            single_parent_edges.append((f if f_ok else mo, child))
+        f, mo = norm(m.get("father","")), norm(m.get("mother",""))
+        if f in existing and mo in existing and f and mo:
+            couple_pairs.add(frozenset({f, mo}))
 
-    # 為每一對父母建立一個婚姻節點（小圓點），把兩位父母與它放在同一 rank，再由它往下接孩子
-    union_idx = 0
-    for (f, mo), kids in couple_children.items():
-        union_id = f"U{union_idx}"; union_idx += 1
+    # 為每對父母建立婚姻節點
+    pair_to_union = {}     # frozenset({f,mo}) -> union_id
+    for idx, pair in enumerate(sorted(couple_pairs, key=lambda p: sorted(list(p)))):
+        union_id = f"U{idx}"
+        pair_to_union[pair] = union_id
+        f, mo = sorted(list(pair))
         with dot.subgraph() as s:
             s.attr(rank="same")
             s.node(union_id, label="", shape="point", width="0.01")
             s.edge(f, union_id, dir="none", weight="10")
             s.edge(union_id, mo, dir="none", weight="10")
-        for c in kids:
-            dot.edge(union_id, c, weight="2", minlen="1")
 
-    # 只有單親資訊時，直接由該家長連到孩子
-    for p, c in single_parent_edges:
-        dot.edge(p, c, weight="2")
+    # 3) 連孩子到婚姻節點；若僅有其中一位父/母，且能唯一對應到某個「父母對」，也掛到該婚姻節點
+    #    否則，就用單親直連（避免誤判重組家庭）
+    for m in st.session_state["family"]:
+        child = m["name"]
+        f, mo = norm(m.get("father","")), norm(m.get("mother",""))
+        f_ok, mo_ok = f in existing and f, mo in existing and mo
 
-    # 3) 伴侶關係（僅示意，不影響排版）：本人 ↔ 配偶(現任)/前配偶
+        if f_ok and mo_ok:
+            key = frozenset({f, mo})
+            union_id = pair_to_union.get(key)
+            if union_id:
+                dot.edge(union_id, child, weight="2", minlen="1")
+            else:
+                # 萬一沒建出婚姻節點，就退回雙親直連
+                dot.edge(f, child, weight="2")
+                dot.edge(mo, child, weight="2")
+        else:
+            # 嘗試「唯一配對」推斷：這位單親所屬的父母對只有一組，則掛到那組的婚姻節點
+            parent = f if f_ok else (mo if mo_ok else "")
+            if parent:
+                candidate_unions = [u for pair,u in pair_to_union.items() if parent in pair]
+                if len(candidate_unions) == 1:
+                    dot.edge(candidate_unions[0], child, weight="2", minlen="1")
+                else:
+                    # 多組或沒有對應 → 保守地用單親直連
+                    dot.edge(parent, child, weight="2")
+
+    # 4) 伴侶虛線（不影響排版）
     selfs = [x for x in st.session_state["family"] if x["relation"] == "本人"]
     if selfs:
         self_name = selfs[0]["name"]
         partners = [x for x in st.session_state["family"] if x["relation"] in ["配偶(現任)", "前配偶"]]
         for sp in partners:
-            # constraint=false 讓虛線不干擾版面計算
             dot.edge(self_name, sp["name"], dir="none", style="dashed", constraint="false")
 
     st.graphviz_chart(dot)
 else:
     st.info("請先新增 **家庭成員**。")
+
 
 
 # =============================
