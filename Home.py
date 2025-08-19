@@ -136,9 +136,8 @@ if st.session_state.family:
 
 st.markdown("---")
 
-# ================ Step 3：畫圖（兩種模式） ================
-st.header("Step 3. 家族樹（只顯示姓名）")
-mode = st.radio("繪圖模式", ["簡潔模式（垂直連接＋配偶實線相鄰）", "婚姻橫桿模式（Beta）"], horizontal=True)
+# ================ Step 3：單一最佳繪圖模式 ================
+st.header("Step 3. 家族樹（只顯示姓名｜最佳模式）")
 
 def build_generations(fam, unions):
     """本人=0；父母-1；子女+1；配偶同層（迭代收斂）"""
@@ -155,6 +154,7 @@ def build_generations(fam, unions):
     for m in fam:
         if m.get("relation") == "本人":
             gen[m["name"]] = 0
+
     pairs = [(N(u["a"]), N(u["b"])) for u in unions]
     for a, b in pairs:
         if a in gen and b not in gen: gen[b] = gen[a]
@@ -187,13 +187,12 @@ def build_generations(fam, unions):
         gen.setdefault(m["name"], FALLBACK.get(m.get("relation","其他"),0))
     return gen
 
-# ---------- 簡潔模式（垂直連接＋配偶相鄰實線） ----------
-def build_graph_simple():
+def build_graph_best():
     fam = st.session_state.family
     unions = list(st.session_state.unions)  # 複製後可加臨時配對
     if not fam: return None
 
-    # 自動補「本人」與「配偶(現任)」的臨時配對（若未建立）
+    # 自動補「本人 × 配偶(現任)」配對（若未建立）
     me   = [m["name"] for m in fam if m.get("relation") == "本人"]
     curr = [m["name"] for m in fam if m.get("relation") == "配偶(現任)"]
     if me and curr:
@@ -214,12 +213,11 @@ def build_graph_simple():
     dot.attr('node', shape='box', style='rounded,filled',
              fontname="Noto Sans CJK TC, PingFang TC, Microsoft JhengHei")
 
-    # 依世代放同層（兄弟姊妹排序只看孩子，不把配偶放入排序）
+    # 世代同層：只按本人排序（本人優先、其餘依年齡），配偶不納入排序
     for g in sorted(set(gen.values())):
         with dot.subgraph() as s:
             s.attr(rank="same")
             layer = [m for m in fam if gen[m["name"]]==g]
-            # 排序：本人優先，其餘按年齡；不考慮配偶是否存在
             layer.sort(key=lambda m: (m["relation"]!="本人", -m["age"]))
             for m in layer:
                 alive = bool(m.get("alive", True))
@@ -228,7 +226,7 @@ def build_graph_simple():
                 color = "#666666" if not alive else "black"
                 s.node(m["name"], label_of(m), fillcolor=fill, style=style, color=color, fontcolor="#333333")
 
-    # 父母→孩子：透過垂直錨點
+    # 父母→孩子：透過垂直錨點，避免長水平線
     parent_anchor = {}
     def ensure_parent_anchor(pname):
         if pname in parent_anchor: return parent_anchor[pname]
@@ -238,7 +236,7 @@ def build_graph_simple():
         dot.edge(pname, aid, tailport="s", headport="n", weight="80", minlen="1")  # 先向下
         return aid
 
-    # 兄弟姊妹順序（僅孩子本身）
+    # 兄弟姊妹順序（僅孩子本人）
     sib_groups = defaultdict(list)
     for m in fam:
         f, mo = N(m.get("father","")), N(m.get("mother",""))
@@ -258,7 +256,7 @@ def build_graph_simple():
         if mo in existing and mo:
             dot.edge(ensure_parent_anchor(mo), c, tailport="s", headport="n", weight="40", minlen="1")
 
-    # 配偶：建立「配偶錨點」，強制相鄰；再畫一條可見實線（不影響層級）
+    # 配偶相鄰：配偶錨點 + 兩條不可見高權重邊，確保靠在一起；再畫可見實線（不影響分層）
     couple_anchor = {}   # frozenset({a,b}) -> anchor id
     def ensure_couple_anchor(a, b):
         key = frozenset((a, b))
@@ -266,7 +264,7 @@ def build_graph_simple():
         cid = f"CA_{len(couple_anchor)}"
         couple_anchor[key] = cid
         dot.node(cid, label="", shape="point", width="0.01", height="0.01", style="invis")
-        # 不可見的 A→錨點→B，超高權重，固定 A 在左、B 在右，兩者緊靠
+        # 鎖相鄰（A 在左、B 在右）
         dot.edge(a, cid, style="invis", weight="999", minlen="0", constraint="true")
         dot.edge(cid, b, style="invis", weight="999", minlen="0", constraint="true")
         return cid
@@ -276,99 +274,12 @@ def build_graph_simple():
         if a not in existing or b not in existing:
             continue
         ensure_couple_anchor(a, b)
-        # 可見實線，不影響層級（只作視覺）
         vis_style = "solid" if u.get("type") != "前配偶" else "dashed"
         dot.edge(a, b, style=vis_style, color="black", penwidth="1.4", constraint="false")
 
     return dot
 
-# ---------- 婚姻橫桿（保留 Beta） ----------
-def build_graph_marriage_bar():
-    fam = st.session_state.family
-    unions = st.session_state.unions
-    if not fam: return None
-
-    gen = build_generations(fam, unions)
-    people = {m["name"]: m for m in fam}
-    existing = set(people.keys())
-
-    dot = Digraph(format="png")
-    dot.attr(rankdir="TB", splines="ortho", nodesep="0.9", ranksep="1.3",
-             concentrate="false", newrank="true")
-    dot.attr('edge', arrowhead='none')
-    dot.attr('node', shape='box', style='rounded,filled',
-             fontname="Noto Sans CJK TC, PingFang TC, Microsoft JhengHei")
-
-    for g in sorted(set(gen.values())):
-        with dot.subgraph() as s:
-            s.attr(rank="same")
-            for m in [x for x in fam if gen[x["name"]]==g]:
-                alive = bool(m.get("alive", True))
-                fill  = "khaki" if (m["relation"]=="本人" and alive) else ("#eeeeee" if not alive else "lightgrey")
-                style = "rounded,filled" + (",dashed" if not alive else "")
-                color = "#666666" if not alive else "black"
-                s.node(m["name"], label_of(m), fillcolor=fill, style=style, color=color, fontcolor="#333333")
-
-    marriage_bar = {}
-    def ensure_bar(a,b):
-        key=frozenset((a,b))
-        if key in marriage_bar: return marriage_bar[key]
-        mid=f"MB_{len(marriage_bar)}"
-        marriage_bar[key]=mid
-        with dot.subgraph() as s:
-            s.attr(rank="same")
-            s.node(mid, label="", shape="box",
-                   width="0.8", height="0.02", fixedsize="true",
-                   style="filled", fillcolor="black", color="black")
-            s.node(a); s.node(b)
-        dot.edge(a, mid, tailport="s", headport="n", weight="40", minlen="1")
-        dot.edge(b, mid, tailport="s", headport="n", weight="40", minlen="1")
-        return mid
-
-    children_by_pair = defaultdict(list)
-    for m in fam:
-        f,mo=N(m.get("father","")),N(m.get("mother",""))
-        if f and mo and f in existing and mo in existing:
-            children_by_pair[frozenset((f,mo))].append(m["name"])
-    for pair, kids in children_by_pair.items():
-        a,b=sorted(list(pair))
-        mid=ensure_bar(a,b)
-        for c in sorted(kids, key=lambda n: age_of(n), reverse=True):
-            dot.edge(mid, c, tailport="s", headport="n", weight="12", minlen="2")
-
-    for u in st.session_state.unions:
-        a,b=N(u.get("a","")),N(u.get("b",""))
-        if a in existing and b in existing:
-            ensure_bar(a,b)
-
-    sp_groups=defaultdict(list)
-    for m in fam:
-        c=m["name"]; f,mo=N(m.get("father","")),N(m.get("mother",""))
-        both=f and mo and f in existing and mo in existing
-        if both: continue
-        if f in existing or mo in existing:
-            parent=f if f in existing else mo
-            other =mo if f in existing else f
-            other =other or "（未知）"
-            sp_groups[(parent,other)].append(c)
-
-    sp_bar={}
-    for key, kids in sp_groups.items():
-        parent, other = key
-        sid=f"SPB_{len(sp_bar)}"; sp_bar[key]=sid
-        with dot.subgraph() as s:
-            s.attr(rank="same")
-            s.node(sid, label="", shape="box",
-                   width="0.8", height="0.02", fixedsize="true",
-                   style="filled", fillcolor="black", color="black")
-            s.node(parent)
-        dot.edge(parent, sid, tailport="s", headport="n", weight="28", minlen="1")
-        for c in sorted(kids, key=lambda n: age_of(n), reverse=True):
-            dot.edge(sid, c, tailport="s", headport="n", weight="12", minlen="2")
-
-    return dot
-
-dot = build_graph_simple() if mode.startswith("簡潔") else build_graph_marriage_bar()
+dot = build_graph_best()
 if dot:
     st.graphviz_chart(dot)
 else:
