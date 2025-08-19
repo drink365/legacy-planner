@@ -1,20 +1,19 @@
-# Home.py  — 家族樹（穩定版：婚姻/單親橫桿｜決定式 SVG 佈局 + 性別底色）
+# Home.py — 家族樹（穩定佈局｜每人獨立，父/母各自連線｜性別底色）
 import math
 import html
 import streamlit as st
 import pandas as pd
 from collections import defaultdict
 
-# ===== 站點與聯絡資訊（可自行修改） =====
+# ===== 網站 & Email =====
 FOOTER_SITE  = "https://gracefo.com"
-FOOTER_EMAIL = "service@gracefo.com"   # ← 換成你的 email
+FOOTER_EMAIL = "service@gracefo.com"
 
-# ===== Streamlit 基本設定 =====
+# ===== 基本設定 =====
 st.set_page_config(page_title="家族盤點｜傳承樹", page_icon="🌳", layout="wide")
 st.title("Step 3. 家族樹（只顯示姓名｜穩定佈局）")
 
-# ===== Demo 初始資料（加上 gender） =====
-# gender: "男" / "女" / "其他/未知"
+# ===== Demo（含 gender）=====
 DEMO_FAMILY = [
     {"name":"陳志明","gender":"男","relation":"本人","age":65,"alive":True,"father":"","mother":"","dod":""},
     {"name":"王春嬌","gender":"女","relation":"配偶(現任)","age":62,"alive":True,"father":"","mother":"","dod":""},
@@ -23,7 +22,7 @@ DEMO_FAMILY = [
 ]
 DEMO_ASSETS = []
 
-# ===== 小工具 =====
+# ===== util =====
 def N(s): return s.strip() if isinstance(s,str) else ""
 
 def age_of(name):
@@ -35,17 +34,16 @@ def label_of(mem):
         return mem["name"]
     return f'{mem["name"]} ✝{N(mem.get("dod","")) or "不在世"}'
 
-# ===== Session State =====
+# ===== state =====
 if "family" not in st.session_state: st.session_state.family = DEMO_FAMILY.copy()
 if "assets" not in st.session_state: st.session_state.assets = DEMO_ASSETS.copy()
-if "unions" not in st.session_state: st.session_state.unions = []  # {"a","b","type"}
+if "unions" not in st.session_state: st.session_state.unions = []     # {"a","b","type"}
 
-# 舊資料若沒有 gender，補上預設
+# 兼容舊資料
 for m in st.session_state.family:
-    if "gender" not in m:
-        m["gender"] = "其他/未知"
+    if "gender" not in m: m["gender"] = "其他/未知"
 
-# ===== 快捷按鈕 =====
+# ===== 快捷 =====
 c1,c2 = st.columns(2)
 with c1:
     if st.button("🧪 載入示範資料", use_container_width=True):
@@ -59,7 +57,7 @@ with c2:
         st.session_state.unions = []
 st.divider()
 
-# ===== Step 1：家族成員 =====
+# ===== Step 1：成員 =====
 st.header("Step 1. 家族成員")
 all_names = [m["name"] for m in st.session_state.family]
 with st.form("add_member"):
@@ -116,7 +114,7 @@ if st.session_state.unions:
 
 st.divider()
 
-# ===== Step 1c：在世 / 逝世 =====
+# ===== Step 1c：在世/逝世 =====
 st.header("Step 1c. 在世 / 逝世")
 if st.session_state.family:
     who = st.selectbox("選擇成員", names, key="life_sel")
@@ -131,19 +129,19 @@ if st.session_state.family:
 
 st.divider()
 
-# ===== 佈局核心 =====
-CELL_W, CELL_H = 160, 84    # 人名框
-H_GAP, V_GAP   = 36, 70     # 間距
-BAR_W          = 46
+# ===== 佈局核心（獨立節點；父/母各自連線；婚姻不參與排版）=====
+CELL_W, CELL_H = 160, 84
+H_GAP, V_GAP   = 36, 70
 RADIUS         = 12
 
 def build_generations(fam):
-    people={m["name"]:m for m in fam}; existing=set(people)
+    """由親子關係推到代別；不足則用關係 fallback。"""
+    people={m["name"] for m in fam}
     parent_of=defaultdict(set); child_of=defaultdict(set)
     for m in fam:
         n=m["name"]; f,mo=N(m.get("father","")),N(m.get("mother",""))
-        if f in existing: parent_of[f].add(n); child_of[n].add(f)
-        if mo in existing: parent_of[mo].add(n); child_of[n].add(mo)
+        if f in people: parent_of[f].add(n); child_of[n].add(f)
+        if mo in people: parent_of[mo].add(n); child_of[n].add(mo)
     gen={}
     for m in fam:
         if m.get("relation")=="本人": gen[m["name"]]=0
@@ -164,130 +162,55 @@ def build_generations(fam):
     for m in fam: gen.setdefault(m["name"], FALLBACK.get(m.get("relation","其他"),0))
     return gen
 
-def compute_blocks(fam, unions):
-    people={m["name"]:m for m in fam}; existing=set(people)
+def layout_independent(fam):
+    """每個人獨立排版：同代依「父母平均 X（若可）」排序；不把夫妻綁成一塊。"""
+    people={m["name"]:m for m in fam}
     gen = build_generations(fam)
 
-    # 顯式配對 + 由子女推論生父母配對
-    pair_type={}
-    for u in unions:
-        a,b=N(u["a"]),N(u["b"])
-        if a in existing and b in existing and a!=b:
-            pair_type[frozenset((a,b))]=u.get("type","伴侶")
-    for m in fam:
-        f,mo=N(m.get("father","")),N(m.get("mother",""))
-        if f in existing and mo in existing and f and mo:
-            pair_type.setdefault(frozenset((f,mo)),"生物父母")
+    # 按代收集
+    by_g=defaultdict(list)
+    for n,g in gen.items(): by_g[g].append(n)
+    min_g = min(by_g.keys()); max_g = max(by_g.keys())
 
-    pairs={}
-    singles=defaultdict(lambda:{"children":[],"gen":0})
-    for key,typ in pair_type.items():
-        a,b = tuple(key)
-        g   = min(gen.get(a,0), gen.get(b,0))
-        pairs[key] = {"parents":[a,b],"gen":g,"children":[],"type":typ}
+    # 先隨機（按關係/年齡）給每代一個初始順序
+    col = {}
+    for g in range(min_g, max_g+1):
+        arr = by_g[g]
+        arr.sort(key=lambda n:(
+            0 if people[n].get("relation")=="本人" else
+            1 if "配偶" in people[n].get("relation","") or people[n].get("relation")=="伴侶" else
+            2, -people[n].get("alive",True), -age_of(n), n))
+        for i,n in enumerate(arr):
+            col[n]=float(i)
 
-    for m in fam:
-        c=m["name"]; f,mo=N(m.get("father","")),N(m.get("mother",""))
-        if f and mo and f in existing and mo in existing:
-            key=frozenset((f,mo))
-            if key in pairs: pairs[key]["children"].append(c)
-        else:
-            if f in existing:
-                singles[f]["children"].append(c); singles[f]["gen"]=gen.get(f,0)
-            if mo in existing:
-                singles[mo]["children"].append(c); singles[mo]["gen"]=gen.get(mo,0)
+    # 迭代 2~3 次：用「父母平均 X」微調每一代的順序（單親就用該親）
+    for _ in range(3):
+        for g in range(min_g+1, max_g+1):
+            arr = by_g[g]
+            def target_x(n):
+                f=N(people[n].get("father","")); m=N(people[n].get("mother",""))
+                xs=[]
+                if f in col: xs.append(col[f])
+                if m in col: xs.append(col[m])
+                if xs: return sum(xs)/len(xs)
+                return col[n]  # 沒父母位置就保持
+            arr.sort(key=lambda n:(target_x(n), -age_of(n), n))
+            for i,n in enumerate(arr):
+                col[n]=float(i)
 
-    for p in pairs.values():
-        p["children"].sort(key=lambda n:age_of(n), reverse=True)
-    for s in singles.values():
-        s["children"].sort(key=lambda n:age_of(n), reverse=True)
+    # 座標
+    pos={}
+    for n,g in gen.items(): pos[n]=(col[n], g)
+    return pos, gen
 
-    return gen, pairs, singles
-
-def layout_and_svg(fam, unions):
-    if not fam: return "<p>尚無資料</p>"
-
+def draw_svg(fam, unions, pos, gen):
     people={m["name"]:m for m in fam}
-    gen, pairs, singles = compute_blocks(fam, unions)
 
-    # 拆出「有孩子的雙親/單親」與「其它純配偶」
-    parent_pairs = {k:v for k,v in pairs.items() if len(v["children"])>0}
-
-    pos   = {}   # person -> (col,row)（col 允許小數）
-    bars  = []   # (center_col, row+0.35, kind, width, parents, kids)
-    max_col = 0
-
-    min_g = min(gen.values() or [0]); max_g = max(gen.values() or [0])
-    next_child_col = {g:0 for g in range(min_g, max_g+2)}
-    next_free_col  = {g:0 for g in range(min_g, max_g+1)}
-
-    # A. 會生孩子的父母區塊：先放孩子，再置中父母/單親
-    for k, p in sorted(parent_pairs.items(), key=lambda kv:(kv[1]["gen"], ",".join(sorted(kv[0])))):
-        a,b = tuple(k); g=p["gen"]; kids=p["children"]
-        start = next_child_col[g+1]
-        for i,c in enumerate(kids):
-            if c not in pos: pos[c]=(start+i, g+1)
-        next_child_col[g+1] += max(1,len(kids))
-
-        center = start + (max(1,len(kids))-1)/2
-        if a not in pos: pos[a]=(center-0.35, g)
-        if b not in pos: pos[b]=(center+0.35, g)
-        bars.append((center, g+0.35, "pair", BAR_W, (a,b), kids))
-        max_col = max(max_col, next_child_col[g+1])
-
-    for parent, s in sorted(singles.items(), key=lambda kv:(kv[1]["gen"], kv[0])):
-        kids=s["children"]
-        if not kids: continue
-        g=s["gen"]
-        start = next_child_col[g+1]
-        for i,c in enumerate(kids):
-            if c not in pos: pos[c]=(start+i, g+1)
-        next_child_col[g+1] += max(1,len(kids))
-        center = start + (max(1,len(kids))-1)/2
-        if parent not in pos: pos[parent]=(center, g)
-        bars.append((center, g+0.35, "single", BAR_W*0.7, (parent,), kids))
-        max_col = max(max_col, next_child_col[g+1])
-
-    # B. 其它純配偶：緊貼本人
-    for u in sorted(unions, key=lambda x:min(gen.get(N(x["a"]),0), gen.get(N(x["b"]),0))):
-        a,b=N(u["a"]),N(u["b"])
-        if not a or not b or a==b: continue
-        g=min(gen.get(a,0),gen.get(b,0))
-        key=frozenset((a,b))
-        if key in parent_pairs:
-            if a in pos and b not in pos: pos[b]=(pos[a][0]+0.7, g)
-            elif b in pos and a not in pos: pos[a]=(pos[b][0]-0.7, g)
-            continue
-        if a in pos and b not in pos:
-            pos[b]=(pos[a][0]+0.7, g); center=(pos[a][0]+pos[b][0])/2
-        elif b in pos and a not in pos:
-            pos[a]=(pos[b][0]-0.7, g); center=(pos[a][0]+pos[b][0])/2
-        elif a in pos and b in pos:
-            center=(pos[a][0]+pos[b][0])/2
-        else:
-            c0=next_free_col[g]
-            pos[a]=(c0-0.35, g); pos[b]=(c0+0.35, g)
-            next_free_col[g]+=1; center=c0
-        bars.append((center, g+0.35, "pair_only", BAR_W*0.8, (a,b), []))
-        max_col = max(max_col, next_free_col[g])
-
-    # C. 沒有配偶也沒有孩子的人名，補到該代右側
-    placed=set(pos.keys())
-    leftovers=defaultdict(list)
-    for n in people:
-        if n not in placed:
-            leftovers[gen.get(n,0)].append(n)
-    for g, arr in leftovers.items():
-        arr.sort(key=lambda n:(n!="本人",-age_of(n),n))
-        for n in arr:
-            col=next_free_col[g]
-            pos[n]=(col,g); next_free_col[g]+=1
-            max_col=max(max_col,next_free_col[g])
-
-    # --- SVG 輸出 ---
-    max_col_from_pos = max([p[0] for p in pos.values()]) if pos else 0
-    cols = int(math.ceil(max(max_col, max_col_from_pos) + 2))
-    rows = (max_g - min_g + 1) + 1
+    # 畫布大小
+    min_g = min(gen.values()); max_g = max(gen.values())
+    max_c = max(p[0] for p in pos.values()) if pos else 0
+    cols  = int(math.ceil(max_c+2))
+    rows  = (max_g - min_g + 1) + 1
     W = int(cols*CELL_W + (cols+1)*H_GAP)
     H = int(rows*CELL_H + (rows+1)*V_GAP)
 
@@ -297,21 +220,16 @@ def layout_and_svg(fam, unions):
         return x,y
 
     def fill_color(member):
-        """底色規則：亡者淺灰；男性淺粉藍；女性淺粉紅；其他/未知極淺灰"""
-        if not member.get("alive", True):
-            return "#eeeeee"
+        if not member.get("alive", True): return "#eeeeee"
         g = member.get("gender","其他/未知")
-        if g == "男":
-            return "#dbeafe"   # 淺粉藍
-        if g == "女":
-            return "#ffe4e8"   # 淺粉紅
-        return "#f3f4f6"       # 中性極淺灰
+        if g=="男": return "#dbeafe"
+        if g=="女": return "#ffe4e8"
+        return "#f3f4f6"
 
     def person_rect(name):
         m = people[name]
-        x,y = to_xy(*pos[name])
-        w,h = CELL_W, CELL_H
-        rx,ry = RADIUS, RADIUS
+        x,y = to_xy(*pos[name]); w,h= CELL_W,CELL_H
+        rx,ry= RADIUS,RADIUS
         alive = bool(m.get("alive",True))
         fill = fill_color(m)
         stroke = "#a0a0a0" if not alive else "#333"
@@ -322,38 +240,46 @@ def layout_and_svg(fam, unions):
   <text x="{x+w/2}" y="{y+h/2+6}" text-anchor="middle" font-family="Noto Sans CJK TC, Microsoft JhengHei" font-size="18" fill="#222">{label}</text>
 '''
 
-    def hline(x1,y1,x2): return f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y1}" stroke="#222" stroke-width="2"/>'
-    def vline(x1,y1,y2): return f'<line x1="{x1}" y1="{y1}" x2="{x1}" y2="{y2}" stroke="#222" stroke-width="2"/>'
+    def hline(x1,y1,x2,w=2): return f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y1}" stroke="#222" stroke-width="{w}"/>'
+    def vline(x1,y1,y2,w=2): return f'<line x1="{x1}" y1="{y1}" x2="{x1}" y2="{y2}" stroke="#222" stroke-width="{w}"/>'
 
-    svg = [f'<svg width="{W}" height="{H}" xmlns="http://www.w3.org/2000/svg">']
+    svg=[f'<svg width="{W}" height="{H}" xmlns="http://www.w3.org/2000/svg">']
 
-    # 先畫線
-    for center, rY, kind, barw, parents, kids in bars:
-        bx, by = to_xy(center, rY)
-        if kind.startswith("pair"):
-            a,b = parents if len(parents)==2 else (parents[0], parents[0])
-            ax,ay = to_xy(*pos[a]); svg.append(vline(ax+CELL_W/2, ay+CELL_H, by))
-            if len(parents)==2:
-                bx2,by2 = to_xy(*pos[b]); svg.append(vline(bx2+CELL_W/2, by2+CELL_H, by))
-            svg.append(hline(bx - barw/2, by, bx + barw/2))
-        else:  # single
-            p = parents[0]
-            px,py = to_xy(*pos[p]); svg.append(vline(px+CELL_W/2, py+CELL_H, by))
-            svg.append(hline(bx - barw/2, by, bx + barw/2))
-        for c in kids:
-            cx, cy = to_xy(*pos[c])
-            svg.append(vline(bx, by, cy))
-            svg.append(hline(min(bx, cx + CELL_W/2), cy, max(bx, cx + CELL_W/2)))
+    # 1) 親子連線：父/母各自用「L 型」連到孩子（不經由夫妻桿）
+    for child,m in people.items():
+        cx, cy = to_xy(*pos[child])
+        xC = cx + CELL_W/2
+        for parent_key in ("father","mother"):
+            p = N(m.get(parent_key,""))
+            if p and p in pos:
+                px, py = to_xy(*pos[p]); xP = px + CELL_W/2
+                y1 = py + CELL_H
+                y2 = cy
+                ymid = int((y1 + y2) / 2)
+                svg.append(vline(xP, y1, ymid))
+                svg.append(hline(min(xP, xC), ymid, max(xP, xC)))
+                svg.append(vline(xC, ymid, y2))
 
-    # 再畫人名框
+    # 2) 婚姻連線（只示意兩人關係，不參與佈局；前配偶用虛線）
+    for u in st.session_state.unions:
+        a,b=N(u["a"]),N(u["b"])
+        if a in pos and b in pos and gen.get(a)==gen.get(b):
+            ax, ay = to_xy(*pos[a]); bx, by = to_xy(*pos[b])
+            y = int((ay + by)/2) + CELL_H + 8
+            x1 = ax + CELL_W/2; x2 = bx + CELL_W/2
+            dashed = ' stroke-dasharray="6,6"' if "前配偶" in u.get("type","") else ""
+            svg.append(f'<line x1="{min(x1,x2)}" y1="{y}" x2="{max(x1,x2)}" y2="{y}" stroke="#444" stroke-width="2"{dashed}/>')
+
+    # 3) 人名框
     for name in sorted(pos, key=lambda n:(pos[n][1], pos[n][0])):
         svg.append(person_rect(name))
 
-    svg.append('</svg>')
+    svg.append("</svg>")
     return "\n".join(svg)
 
-# ===== 繪圖 =====
-svg = layout_and_svg(st.session_state.family, st.session_state.unions)
+# === 產生與繪製 ===
+pos, gen = layout_independent(st.session_state.family)
+svg = draw_svg(st.session_state.family, st.session_state.unions, pos, gen)
 st.markdown(svg, unsafe_allow_html=True)
 
 st.divider()
