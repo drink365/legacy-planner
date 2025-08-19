@@ -1,109 +1,289 @@
+import streamlit as st
+import pandas as pd
 from graphviz import Digraph
 from collections import defaultdict
 
-def build_graph_union(fam, unions):
-    """
-    目標：
-    1) 配偶一定相鄰（rank=same）
-    2) 以「夫妻中介點」承接所有子女線（避免孩子拉兩條線）
-    3) 上下分層：父母在上一層、孩子在下一層；配偶同層
-    4) 線條盡量直且不交錯
-    """
-    if not fam: 
-        return None
+# ================ 基本設定 ================
+st.set_page_config(page_title="家族盤點｜傳承樹", page_icon="🌳", layout="wide")
+st.title("Step 3. 家族樹（只顯示姓名）")
 
-    # 構建索引
-    people = {p["name"]: p for p in fam}
+# ================ Demo 初始資料 ================
+DEMO_FAMILY = [
+    {"name": "陳志明", "relation": "本人",       "age": 65, "alive": True,  "father": "",       "mother": "", "dod": ""},
+    {"name": "王春嬌", "relation": "配偶(現任)", "age": 62, "alive": True,  "father": "",       "mother": "", "dod": ""},
+    {"name": "陳小明", "relation": "子女",       "age": 35, "alive": True,  "father": "陳志明", "mother": "王春嬌", "dod": ""},
+    {"name": "陳小芳", "relation": "子女",       "age": 32, "alive": True,  "father": "陳志明", "mother": "王春嬌", "dod": ""},
+]
+DEMO_ASSETS = [
+    {"owner": "陳志明", "type": "公司股權", "value": 100_000_000, "note": ""},
+    {"owner": "陳志明", "type": "不動產",   "value": 50_000_000,  "note": "台北市某處"},
+]
+
+# ================ Session State ================
+if "family" not in st.session_state:
+    st.session_state.family = DEMO_FAMILY.copy()
+if "assets" not in st.session_state:
+    st.session_state.assets = DEMO_ASSETS.copy()
+if "unions" not in st.session_state:
+    st.session_state.unions = []   # {"a":姓名,"b":姓名,"type":"現任配偶/前配偶/伴侶"}
+
+# ================ 小工具 ================
+def N(s): return s.strip() if isinstance(s, str) else ""
+
+def pair_key(a, b):
+    a, b = N(a), N(b)
+    if not a or not b or a == b: return None
+    return tuple(sorted([a, b]))
+
+def age_of(name):
+    m = next((x for x in st.session_state.family if x["name"] == name), None)
+    return int(m.get("age", 0)) if m else 0
+
+def label_of(mem):
+    if mem.get("alive", True):
+        return mem["name"]
+    dod = N(mem.get("dod", ""))
+    return f"{mem['name']} {'✝'+dod if dod else '✝不在世'}"
+
+# ================ 快捷鍵 ================
+c1, c2 = st.columns(2)
+with c1:
+    if st.button("🧪 載入示範資料", use_container_width=True):
+        st.session_state.family = DEMO_FAMILY.copy()
+        st.session_state.assets = DEMO_ASSETS.copy()
+        st.session_state.unions = []
+with c2:
+    if st.button("🔄 清空所有資料", use_container_width=True):
+        st.session_state.family = []
+        st.session_state.assets = []
+        st.session_state.unions = []
+
+st.markdown("---")
+
+# ================ Step 1：家族成員 ================
+st.header("Step 1. 家族成員")
+all_names = [m["name"] for m in st.session_state.family]
+
+with st.form("add_member"):
+    c = st.columns(6)
+    name     = c[0].text_input("姓名")
+    relation = c[1].selectbox("關係", [
+        "本人","配偶(現任)","前配偶","伴侶",
+        "子女","子女之配偶",
+        "孫子","孫女","孫輩之配偶","其他"
+    ], index=4)
+    age      = c[2].number_input("年齡", 0, 120, 30)
+    alive    = c[3].checkbox("在世", True)
+    father   = c[4].selectbox("父（選填）", [""] + all_names)
+    mother   = c[5].selectbox("母（選填）", [""] + all_names)
+    ok = st.form_submit_button("➕ 新增")
+    if ok:
+        name = N(name)
+        if not name:
+            st.error("請輸入姓名")
+        elif any(m["name"] == name for m in st.session_state.family):
+            st.error("姓名重複，請加註稱謂或別名")
+        elif relation in {"子女","孫子","孫女"} and not (N(father) or N(mother)):
+            st.error("子女/孫輩至少需指定父或母")
+        else:
+            st.session_state.family.append({
+                "name": name, "relation": relation, "age": age, "alive": alive,
+                "father": N(father), "mother": N(mother), "dod": ""
+            })
+            st.success(f"已新增：{name}")
+
+if st.session_state.family:
+    st.dataframe(pd.DataFrame(st.session_state.family), use_container_width=True)
+
+st.markdown("---")
+
+# ================ Step 1b：伴侶關係 ================
+st.header("Step 1b. 伴侶關係")
+names = [m["name"] for m in st.session_state.family]
+with st.form("add_union"):
+    c = st.columns(4)
+    a = c[0].selectbox("成員 A", names)
+    b = c[1].selectbox("成員 B", names)
+    t = c[2].selectbox("類型", ["現任配偶","前配偶","伴侶"])
+    ok = c[3].form_submit_button("建立配對")
+    if ok:
+        k = pair_key(a, b)
+        if not k:
+            st.error("請選不同的兩人")
+        elif any(pair_key(u["a"], u["b"]) == k for u in st.session_state.unions):
+            st.warning("配對已存在")
+        else:
+            st.session_state.unions.append({"a": k[0], "b": k[1], "type": t})
+            st.success(f"已配對：{k[0]} ↔ {k[1]}")
+
+if st.session_state.unions:
+    st.table(pd.DataFrame(st.session_state.unions))
+
+st.markdown("---")
+
+# ================ Step 1c：在世/逝世 ================
+st.header("Step 1c. 在世 / 逝世")
+if st.session_state.family:
+    who = st.selectbox("選擇成員", names, key="life_sel")
+    m = next(x for x in st.session_state.family if x["name"] == who)
+    c = st.columns(3)
+    alive = c[0].checkbox("在世", value=bool(m.get("alive", True)))
+    dod   = c[1].text_input("逝世日期(YYYY-MM-DD/可空)", value=m.get("dod", ""))
+    if c[2].button("儲存"):
+        m["alive"] = alive
+        m["dod"] = N(dod)
+        st.success("已更新")
+
+st.markdown("---")
+
+# ================ Step 3：單一最佳繪圖模式 ================
+st.header("Step 3. 家族樹（只顯示姓名｜最佳模式）")
+
+def build_generations(fam, unions):
+    """本人=0；父母-1；子女+1；配偶同層（迭代收斂）"""
+    people = {m["name"]: m for m in fam}
+    existing = set(people.keys())
+    parent_of = defaultdict(set)
+    child_of  = defaultdict(set)
+    for m in fam:
+        n, f, mo = m["name"], N(m.get("father","")), N(m.get("mother",""))
+        if f in existing:  parent_of[f].add(n);  child_of[n].add(f)
+        if mo in existing: parent_of[mo].add(n); child_of[n].add(mo)
+
+    gen = {}
+    for m in fam:
+        if m.get("relation") == "本人":
+            gen[m["name"]] = 0
+
+    pairs = [(N(u["a"]), N(u["b"])) for u in unions]
+    for a, b in pairs:
+        if a in gen and b not in gen: gen[b] = gen[a]
+        if b in gen and a not in gen: gen[a] = gen[b]
+
+    changed=True; loops=0
+    while changed and loops<10*max(1,len(fam)):
+        changed=False; loops+=1
+        for p,kids in parent_of.items():
+            if p in gen:
+                for k in kids:
+                    want=gen[p]+1
+                    if gen.get(k)!=want: gen[k]=want; changed=True
+        for c,ps in child_of.items():
+            if c in gen:
+                for p in ps:
+                    want=gen[c]-1
+                    if gen.get(p)!=want: gen[p]=want; changed=True
+        for a,b in pairs:
+            if a in gen and b not in gen: gen[b]=gen[a]; changed=True
+            if b in gen and a not in gen: gen[a]=gen[b]; changed=True
+
+    FALLBACK = {
+        "祖父":-2,"祖母":-2,"父親":-1,"母親":-1,
+        "本人":0,"配偶(現任)":0,"前配偶":0,"伴侶":0,
+        "子女":1,"子女之配偶":1,
+        "孫子":2,"孫女":2,"孫輩之配偶":2
+    }
+    for m in fam:
+        gen.setdefault(m["name"], FALLBACK.get(m.get("relation","其他"),0))
+    return gen
+
+def build_graph_best():
+    fam = st.session_state.family
+    unions = list(st.session_state.unions)  # 複製後可加臨時配對
+    if not fam: return None
+
+    # 自動補「本人 × 配偶(現任)」配對（若未建立）
+    me   = [m["name"] for m in fam if m.get("relation") == "本人"]
+    curr = [m["name"] for m in fam if m.get("relation") == "配偶(現任)"]
+    if me and curr:
+        me = me[0]
+        for sp in curr:
+            pk = pair_key(me, sp)
+            if pk and not any(pair_key(u["a"], u["b"]) == pk for u in unions):
+                unions.append({"a": pk[0], "b": pk[1], "type": "現任配偶"})
+
+    gen = build_generations(fam, unions)
+    people = {m["name"]: m for m in fam}
     existing = set(people.keys())
 
-    # Graph 全域設定
-    dot = Digraph("FamilyTree", graph_attr={
-        "rankdir": "TB",           # 由上而下
-        "splines": "ortho",        # 直角線，較整齊
-        "nodesep": "0.3",
-        "ranksep": "0.6",
-        "dpi": "120"
-    }, node_attr={
-        "shape": "box",
-        "fontsize": "10",
-        "height": "0.35",
-        "width": "1.4",
-        "style": "rounded,filled",
-        "fillcolor": "white",
-    }, edge_attr={
-        "penwidth": "1.2"
-    })
+    dot = Digraph(format="png")
+    dot.attr(rankdir="TB", splines="ortho", nodesep="1.0", ranksep="1.4",
+             concentrate="false", newrank="true", ordering="out")
+    dot.attr('edge', arrowhead='none')
+    dot.attr('node', shape='box', style='rounded,filled',
+             fontname="Noto Sans CJK TC, PingFang TC, Microsoft JhengHei")
 
-    # 畫節點（只顯示姓名；若過世可在這裡加小十字或灰階）
-    for name, m in people.items():
-        label = name if m.get("alive", True) else f"{name} ✝"
-        dot.node(name, label=label)
+    # 世代同層：只按本人排序（本人優先、其餘依年齡），配偶不納入排序
+    for g in sorted(set(gen.values())):
+        with dot.subgraph() as s:
+            s.attr(rank="same")
+            layer = [m for m in fam if gen[m["name"]]==g]
+            layer.sort(key=lambda m: (m["relation"]!="本人", -m["age"]))
+            for m in layer:
+                alive = bool(m.get("alive", True))
+                fill  = "khaki" if (m["relation"]=="本人" and alive) else ("#eeeeee" if not alive else "lightgrey")
+                style = "rounded,filled" + (",dashed" if not alive else "")
+                color = "#666666" if not alive else "black"
+                s.node(m["name"], label_of(m), fillcolor=fill, style=style, color=color, fontcolor="#333333")
 
-    # —— 1) 配偶相鄰：用 rank=same 限制，並加一條極短的虛線連起來（或實線）
-    # 並為每對配偶建立一個「夫妻中介點」union_x，孩子只接這個點
-    couple_union = {}  # (a,b) 排序後為 key → union_id
-    for i, u in enumerate(unions or []):
-        a, b = u.get("a"), u.get("b")
-        if not a or not b or a not in existing or b not in existing:
-            continue
-        key = tuple(sorted((a, b)))
-        uid = couple_union.get(key) or f"U{i}"
-        couple_union[key] = uid
+    # 父母→孩子：透過垂直錨點，避免長水平線
+    parent_anchor = {}
+    def ensure_parent_anchor(pname):
+        if pname in parent_anchor: return parent_anchor[pname]
+        aid = f"PA_{len(parent_anchor)}"
+        parent_anchor[pname] = aid
+        dot.node(aid, label="", shape="point", width="0.01", height="0.01", style="invis")
+        dot.edge(pname, aid, tailport="s", headport="n", weight="80", minlen="1")  # 先向下
+        return aid
 
-        # 同層
-        with dot.subgraph() as same:
-            same.attr(rank="same")
-            same.node(a)
-            same.node(b)
+    # 兄弟姊妹順序（僅孩子本人）
+    sib_groups = defaultdict(list)
+    for m in fam:
+        f, mo = N(m.get("father","")), N(m.get("mother",""))
+        if f and mo:      sib_groups[("both", f, mo)].append(m["name"])
+        elif f or mo:     sib_groups[("single", f or mo)].append(m["name"])
+    for _, kids in sib_groups.items():
+        ordered = sorted(kids, key=lambda n: age_of(n), reverse=True)
+        for a,b in zip(ordered, ordered[1:]):
+            dot.edge(a, b, style="invis", constraint="false", weight="1")
 
-        # 夫妻中介點（很小很小）
-        dot.node(uid, label="", shape="point", width="0.01", height="0.01")
-
-        # 夫↔妻連到中介點（不佔層級，僅為幾何定位）
-        style = "solid" if u.get("type") != "前配偶" else "dashed"
-        dot.edge(a, uid, style=style, weight="10")
-        dot.edge(b, uid, style=style, weight="10")
-
-    # —— 2) 父母 → 子女：只從「夫妻中介點」往下接
-    # 若只有單親，則由該單親本人建立一個臨時的 union 點，仍以 union → 子女
-    # 先按照 (father, mother) 分群（若你的欄位名稱不同，請相應修改）
-    groups = defaultdict(list)  # key: (f or "", m or "") → [child...]
+    # 連孩子
     for m in fam:
         c = m["name"]
-        f = (m.get("father") or "").strip()
-        mo = (m.get("mother") or "").strip()
-        groups[(f if f in existing else "", mo if mo in existing else "")].append(c)
+        f, mo = N(m.get("father","")), N(m.get("mother",""))
+        if f in existing and f:
+            dot.edge(ensure_parent_anchor(f),  c, tailport="s", headport="n", weight="40", minlen="1")
+        if mo in existing and mo:
+            dot.edge(ensure_parent_anchor(mo), c, tailport="s", headport="n", weight="40", minlen="1")
 
-    for (f, mo), kids in groups.items():
-        if not kids:
+    # 配偶相鄰：配偶錨點 + 兩條不可見高權重邊，確保靠在一起；再畫可見實線（不影響分層）
+    couple_anchor = {}   # frozenset({a,b}) -> anchor id
+    def ensure_couple_anchor(a, b):
+        key = frozenset((a, b))
+        if key in couple_anchor: return couple_anchor[key]
+        cid = f"CA_{len(couple_anchor)}"
+        couple_anchor[key] = cid
+        dot.node(cid, label="", shape="point", width="0.01", height="0.01", style="invis")
+        # 鎖相鄰（A 在左、B 在右）
+        dot.edge(a, cid, style="invis", weight="999", minlen="0", constraint="true")
+        dot.edge(cid, b, style="invis", weight="999", minlen="0", constraint="true")
+        return cid
+
+    for u in unions:
+        a, b = N(u.get("a","")), N(u.get("b",""))
+        if a not in existing or b not in existing:
             continue
-
-        # 取得/建立 union 點
-        if f and mo:
-            key = tuple(sorted((f, mo)))
-            uid = couple_union.get(key)
-            if not uid:
-                # 若沒在 unions 明確登記，也臨時建立
-                uid = f"U_auto_{f}_{mo}"
-                couple_union[key] = uid
-                dot.node(uid, label="", shape="point", width="0.01", height="0.01")
-                with dot.subgraph() as same:
-                    same.attr(rank="same"); same.node(f); same.node(mo)
-                dot.edge(f, uid, weight="10"); dot.edge(mo, uid, weight="10")
-        else:
-            # 單親：用單親建立一個臨時 union
-            p = f or mo
-            uid = f"U_single_{p}"
-            dot.node(uid, label="", shape="point", width="0.01", height="0.01")
-            dot.edge(p, uid, weight="8")
-
-        # 把所有孩子接到 union → child（往下一層）
-        for child in kids:
-            dot.edge(uid, child, weight="20", minlen="1")
-
-        # 同父母的孩子之間用不可見邊，保持左右順序（避免交錯）
-        ordered = sorted(kids, key=lambda n: people[n].get("age", 0), reverse=True)
-        for a, b in zip(ordered, ordered[1:]):
-            dot.edge(a, b, style="invis", constraint="false")
+        ensure_couple_anchor(a, b)
+        vis_style = "solid" if u.get("type") != "前配偶" else "dashed"
+        dot.edge(a, b, style=vis_style, color="black", penwidth="1.4", constraint="false")
 
     return dot
+
+dot = build_graph_best()
+if dot:
+    st.graphviz_chart(dot)
+else:
+    st.info("請先新增家庭成員。")
+
+st.markdown("---")
+st.markdown("🌐 [gracefo.com](https://gracefo.com) 　｜　《影響力》傳承策略平台｜永傳家族辦公室")
