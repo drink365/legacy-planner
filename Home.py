@@ -138,7 +138,7 @@ st.markdown("---")
 
 # ================ Step 3：畫圖（兩種模式） ================
 st.header("Step 3. 家族樹（只顯示姓名）")
-mode = st.radio("繪圖模式", ["簡潔模式（垂直連接）", "婚姻橫桿模式（Beta）"], horizontal=True)
+mode = st.radio("繪圖模式", ["簡潔模式（垂直連接＋配偶實線相鄰）", "婚姻橫桿模式（Beta）"], horizontal=True)
 
 def build_generations(fam, unions):
     """本人=0；父母-1；子女+1；配偶同層（迭代收斂）"""
@@ -155,9 +155,10 @@ def build_generations(fam, unions):
     for m in fam:
         if m.get("relation") == "本人":
             gen[m["name"]] = 0
-    for a,b in [(N(u["a"]),N(u["b"])) for u in unions]:
-        if a in gen and b not in gen: gen[b]=gen[a]
-        if b in gen and a not in gen: gen[a]=gen[b]
+    pairs = [(N(u["a"]), N(u["b"])) for u in unions]
+    for a, b in pairs:
+        if a in gen and b not in gen: gen[b] = gen[a]
+        if b in gen and a not in gen: gen[a] = gen[b]
 
     changed=True; loops=0
     while changed and loops<10*max(1,len(fam)):
@@ -172,7 +173,7 @@ def build_generations(fam, unions):
                 for p in ps:
                     want=gen[c]-1
                     if gen.get(p)!=want: gen[p]=want; changed=True
-        for a,b in [(N(u["a"]),N(u["b"])) for u in unions]:
+        for a,b in pairs:
             if a in gen and b not in gen: gen[b]=gen[a]; changed=True
             if b in gen and a not in gen: gen[a]=gen[b]; changed=True
 
@@ -186,11 +187,21 @@ def build_generations(fam, unions):
         gen.setdefault(m["name"], FALLBACK.get(m.get("relation","其他"),0))
     return gen
 
-# ---------- 簡潔模式（垂直連接） ----------
-def build_graph_simple_vertical():
+# ---------- 簡潔模式（垂直連接＋配偶相鄰實線） ----------
+def build_graph_simple():
     fam = st.session_state.family
-    unions = st.session_state.unions
+    unions = list(st.session_state.unions)  # 複製後可加臨時配對
     if not fam: return None
+
+    # 自動補「本人」與「配偶(現任)」的臨時配對（若未建立）
+    me   = [m["name"] for m in fam if m.get("relation") == "本人"]
+    curr = [m["name"] for m in fam if m.get("relation") == "配偶(現任)"]
+    if me and curr:
+        me = me[0]
+        for sp in curr:
+            pk = pair_key(me, sp)
+            if pk and not any(pair_key(u["a"], u["b"]) == pk for u in unions):
+                unions.append({"a": pk[0], "b": pk[1], "type": "現任配偶"})
 
     gen = build_generations(fam, unions)
     people = {m["name"]: m for m in fam}
@@ -216,42 +227,48 @@ def build_graph_simple_vertical():
                 color = "#666666" if not alive else "black"
                 s.node(m["name"], label_of(m), fillcolor=fill, style=style, color=color, fontcolor="#333333")
 
-    # 為每位家長建立「垂直錨點」（不可見小點），強制線先下再走
-    parent_anchor = {}  # name -> anchor id
+    # 父母→孩子：透過垂直錨點
+    parent_anchor = {}
     def ensure_anchor(pname):
         if pname in parent_anchor: return parent_anchor[pname]
         aid = f"PA_{len(parent_anchor)}"
         parent_anchor[pname] = aid
         dot.node(aid, label="", shape="point", width="0.01", height="0.01", style="invis")
-        # 由家長「下緣」到錨點「上緣」，高權重、最短距離，強制先向下
         dot.edge(pname, aid, tailport="s", headport="n", weight="60", minlen="1")
         return aid
 
-    # 兄弟姊妹（同雙親 或 同單親）用隱形邊維持年齡順序，但不影響層級
+    # 兄弟姊妹排序（不改層）
     sib_groups = defaultdict(list)
     for m in fam:
         f, mo = N(m.get("father","")), N(m.get("mother",""))
-        if f and mo:
-            sib_groups[("both", f, mo)].append(m["name"])
-        elif f or mo:
-            sib_groups[("single", f or mo)].append(m["name"])
-    for key, kids in sib_groups.items():
+        if f and mo:      sib_groups[("both", f, mo)].append(m["name"])
+        elif f or mo:     sib_groups[("single", f or mo)].append(m["name"])
+    for _, kids in sib_groups.items():
         ordered = sorted(kids, key=lambda n: age_of(n), reverse=True)
         for a,b in zip(ordered, ordered[1:]):
             dot.edge(a, b, style="invis", constraint="false", weight="1")
 
-    # 以錨點連到孩子：雙親→各自錨點；單親→該家長錨點
+    # 連孩子
     for m in fam:
-        child = m["name"]
+        c = m["name"]
         f, mo = N(m.get("father","")), N(m.get("mother",""))
-        if f in existing and f:   dot.edge(ensure_anchor(f),  child, tailport="s", headport="n", weight="30", minlen="1")
-        if mo in existing and mo: dot.edge(ensure_anchor(mo), child, tailport="s", headport="n", weight="30", minlen="1")
+        if f in existing and f:
+            dot.edge(ensure_anchor(f),  c, tailport="s", headport="n", weight="30", minlen="1")
+        if mo in existing and mo:
+            dot.edge(ensure_anchor(mo), c, tailport="s", headport="n", weight="30", minlen="1")
 
-    # 配偶：虛線、constraint=false（不影響分層）
+    # 配偶：實線相鄰（現任配偶/伴侶用實線；前配偶虛線）
     for u in unions:
         a, b = N(u.get("a","")), N(u.get("b",""))
-        if a in existing and b in existing:
-            dot.edge(a, b, style="dashed", color="#888888", constraint="false", weight="0.5")
+        if a not in existing or b not in existing: 
+            continue
+        # 1) 用不可見邊 + 同層子圖把兩人鎖在一起（順序靠 a->b）
+        with dot.subgraph() as s:
+            s.attr(rank="same")
+            s.edge(a, b, style="invis", weight="200")  # 高權重，促進相鄰
+        # 2) 畫可見的配偶線，但不影響分層
+        vis_style = "solid" if u.get("type") != "前配偶" else "dashed"
+        dot.edge(a, b, style=vis_style, color="black", constraint="false", penwidth="1.4")
 
     return dot
 
@@ -282,7 +299,6 @@ def build_graph_marriage_bar():
                 color = "#666666" if not alive else "black"
                 s.node(m["name"], label_of(m), fillcolor=fill, style=style, color=color, fontcolor="#333333")
 
-    # 夫妻橫桿
     marriage_bar = {}
     def ensure_bar(a,b):
         key=frozenset((a,b))
@@ -315,7 +331,6 @@ def build_graph_marriage_bar():
         if a in existing and b in existing:
             ensure_bar(a,b)
 
-    # 單親橫桿
     sp_groups=defaultdict(list)
     for m in fam:
         c=m["name"]; f,mo=N(m.get("father","")),N(m.get("mother",""))
@@ -343,7 +358,7 @@ def build_graph_marriage_bar():
 
     return dot
 
-dot = build_graph_simple_vertical() if mode.startswith("簡潔") else build_graph_marriage_bar()
+dot = build_graph_simple() if mode.startswith("簡潔") else build_graph_marriage_bar()
 if dot:
     st.graphviz_chart(dot)
 else:
