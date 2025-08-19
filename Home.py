@@ -432,26 +432,6 @@ if st.session_state["family"]:
                 if mates:
                     dot.edge(c, mates[0], style="invis", constraint="false", weight="200")
 
-    # (e) 單親資訊：若能唯一對應到某組父母，就用「那組橫桿」直連；否則由單親直連
-    for m in st.session_state["family"]:
-        child = m["name"]
-        f, mo = norm(m.get("father","")), norm(m.get("mother",""))
-        f_ok, mo_ok = f in existing and f, mo in existing and mo
-        if f_ok and mo_ok:
-            continue
-        parent = f if f_ok else (mo if mo_ok else "")
-        if not parent:
-            continue
-        candidates = [uid for pair, uid in pair_to_union.items() if parent in pair]
-        if len(candidates) == 1:
-            dot.edge(candidates[0], child, tailport="s", headport="n", weight="4", minlen="2")
-        else:
-            dot.edge(parent, child, tailport="s", headport="n", weight="3", minlen="2")
-
-    st.graphviz_chart(dot)
-else:
-    st.info("請先新增 **家庭成員**。")
-
     # (e) 單親資訊：只有「父+母都確認存在」才掛到夫妻橫線；
     #     否則一律由已知的那位父/母直接往下連（適用婚外所生、未知另一方等）
     for m in st.session_state["family"]:
