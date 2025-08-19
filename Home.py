@@ -1,4 +1,4 @@
-# Home.py  — 家族樹（穩定版：婚姻/單親橫桿｜決定式 SVG 佈局）
+# Home.py  — 家族樹（穩定版：婚姻/單親橫桿｜決定式 SVG 佈局 + 性別底色）
 import math
 import html
 import streamlit as st
@@ -13,12 +13,13 @@ FOOTER_EMAIL = "service@gracefo.com"   # ← 換成你的 email
 st.set_page_config(page_title="家族盤點｜傳承樹", page_icon="🌳", layout="wide")
 st.title("Step 3. 家族樹（只顯示姓名｜穩定佈局）")
 
-# ===== Demo 初始資料 =====
+# ===== Demo 初始資料（加上 gender） =====
+# gender: "男" / "女" / "其他/未知"
 DEMO_FAMILY = [
-    {"name":"陳志明","relation":"本人","age":65,"alive":True,"father":"","mother":"","dod":""},
-    {"name":"王春嬌","relation":"配偶(現任)","age":62,"alive":True,"father":"","mother":"","dod":""},
-    {"name":"陳小明","relation":"子女","age":35,"alive":True,"father":"陳志明","mother":"王春嬌","dod":""},
-    {"name":"陳小芳","relation":"子女","age":32,"alive":True,"father":"陳志明","mother":"王春嬌","dod":""},
+    {"name":"陳志明","gender":"男","relation":"本人","age":65,"alive":True,"father":"","mother":"","dod":""},
+    {"name":"王春嬌","gender":"女","relation":"配偶(現任)","age":62,"alive":True,"father":"","mother":"","dod":""},
+    {"name":"陳小明","gender":"男","relation":"子女","age":35,"alive":True,"father":"陳志明","mother":"王春嬌","dod":""},
+    {"name":"陳小芳","gender":"女","relation":"子女","age":32,"alive":True,"father":"陳志明","mother":"王春嬌","dod":""},
 ]
 DEMO_ASSETS = []
 
@@ -39,6 +40,11 @@ if "family" not in st.session_state: st.session_state.family = DEMO_FAMILY.copy(
 if "assets" not in st.session_state: st.session_state.assets = DEMO_ASSETS.copy()
 if "unions" not in st.session_state: st.session_state.unions = []  # {"a","b","type"}
 
+# 舊資料若沒有 gender，補上預設
+for m in st.session_state.family:
+    if "gender" not in m:
+        m["gender"] = "其他/未知"
+
 # ===== 快捷按鈕 =====
 c1,c2 = st.columns(2)
 with c1:
@@ -57,13 +63,14 @@ st.divider()
 st.header("Step 1. 家族成員")
 all_names = [m["name"] for m in st.session_state.family]
 with st.form("add_member"):
-    c = st.columns(6)
+    c = st.columns(7)
     name     = c[0].text_input("姓名")
-    relation = c[1].selectbox("關係",["本人","配偶(現任)","前配偶","伴侶","子女","子女之配偶","孫子","孫女","孫輩之配偶","其他"], index=4)
-    age      = c[2].number_input("年齡",0,120,30)
-    alive    = c[3].checkbox("在世",True)
-    father   = c[4].selectbox("父（選填）",[""]+all_names)
-    mother   = c[5].selectbox("母（選填）",[""]+all_names)
+    gender   = c[1].selectbox("性別", ["男","女","其他/未知"], index=0)
+    relation = c[2].selectbox("關係",["本人","配偶(現任)","前配偶","伴侶","子女","子女之配偶","孫子","孫女","孫輩之配偶","其他"], index=4)
+    age      = c[3].number_input("年齡",0,120,30)
+    alive    = c[4].checkbox("在世",True)
+    father   = c[5].selectbox("父（選填）",[""]+all_names)
+    mother   = c[6].selectbox("母（選填）",[""]+all_names)
     ok = st.form_submit_button("➕ 新增")
     if ok:
         name=N(name)
@@ -75,7 +82,7 @@ with st.form("add_member"):
             st.error("子女/孫輩至少需指定父或母")
         else:
             st.session_state.family.append({
-                "name":name,"relation":relation,"age":age,"alive":alive,
+                "name":name,"gender":gender,"relation":relation,"age":age,"alive":alive,
                 "father":N(father),"mother":N(mother),"dod":""
             })
             st.success(f"已新增：{name}")
@@ -248,7 +255,6 @@ def layout_and_svg(fam, unions):
         g=min(gen.get(a,0),gen.get(b,0))
         key=frozenset((a,b))
         if key in parent_pairs:
-            # 已有婚姻桿；確保相鄰即可
             if a in pos and b not in pos: pos[b]=(pos[a][0]+0.7, g)
             elif b in pos and a not in pos: pos[a]=(pos[b][0]-0.7, g)
             continue
@@ -290,14 +296,24 @@ def layout_and_svg(fam, unions):
         y = int(V_GAP + (row-min_g)*CELL_H + (row-min_g)*V_GAP)
         return x,y
 
+    def fill_color(member):
+        """底色規則：亡者淺灰；男性淺粉藍；女性淺粉紅；其他/未知極淺灰"""
+        if not member.get("alive", True):
+            return "#eeeeee"
+        g = member.get("gender","其他/未知")
+        if g == "男":
+            return "#dbeafe"   # 淺粉藍
+        if g == "女":
+            return "#ffe4e8"   # 淺粉紅
+        return "#f3f4f6"       # 中性極淺灰
+
     def person_rect(name):
         m = people[name]
         x,y = to_xy(*pos[name])
         w,h = CELL_W, CELL_H
         rx,ry = RADIUS, RADIUS
         alive = bool(m.get("alive",True))
-        is_me = (m.get("relation")=="本人")
-        fill = "#f7e08c" if (is_me and alive) else ("#eeeeee" if not alive else "#e7e7e7")
+        fill = fill_color(m)
         stroke = "#a0a0a0" if not alive else "#333"
         dash = ' stroke-dasharray="6,5"' if not alive else ""
         label = html.escape(label_of(m))
