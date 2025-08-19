@@ -452,6 +452,27 @@ if st.session_state["family"]:
 else:
     st.info("請先新增 **家庭成員**。")
 
+    # (e) 單親資訊：只有「父+母都確認存在」才掛到夫妻橫線；
+    #     否則一律由已知的那位父/母直接往下連（適用婚外所生、未知另一方等）
+    for m in st.session_state["family"]:
+        child = m["name"]
+        f, mo = norm(m.get("father","")), norm(m.get("mother",""))
+        f_ok = bool(f) and f in existing
+        mo_ok = bool(mo) and mo in existing
+
+        # 兩位父母都存在的情況已在前面的 (d) 處理過了
+        if f_ok and mo_ok:
+            continue
+
+        # 僅知道一位父或母（或另一方不在清單中）→ 直接由已知那一位往下連
+        parent = f if f_ok else (mo if mo_ok else "")
+        if not parent:
+            continue  # 父母都未知就跳過
+
+        # 不再嘗試掛到包含該家長的所有夫妻橫線，避免誤掛到現任配偶
+        dot.edge(parent, child, tailport="s", headport="n", weight="3", minlen="2")
+
+
 # =============================
 # 頁尾（可點擊連結）
 # =============================
