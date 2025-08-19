@@ -1,4 +1,4 @@
-# Home.py — 家族樹（穩定佈局｜每人獨立，父/母各自連線｜性別底色｜同代依年齡排序+配偶緊鄰）
+# Home.py — 家族樹（穩定佈局｜每人獨立，父/母各自連線｜性別底色｜同代依年齡排序+現任右/前任左）
 import math
 import html
 import streamlit as st
@@ -7,7 +7,7 @@ from collections import defaultdict
 
 # ===== 網站 & Email =====
 FOOTER_SITE  = "https://gracefo.com"
-FOOTER_EMAIL = "123@gracefo.com"   # ← 依你要求已改
+FOOTER_EMAIL = "123@gracefo.com"   # ← 依你要求
 
 # ===== 基本設定 =====
 st.set_page_config(page_title="家族盤點｜傳承樹", page_icon="🌳", layout="wide")
@@ -163,48 +163,77 @@ def build_generations(fam):
     return gen
 
 def generation_orders(fam, gen_map, unions):
-    """每代排序：
-       1) 先挑「錨點人」（不是 *之配偶、也不是 配偶(現任)/前配偶/伴侶），依年齡大→小。
-       2) 其配偶（現任→伴侶→前配偶）緊鄰放在錨點右側。
-       3) 剩餘（沒有錨點的、或孤立）再依年齡大→小。
+    """同代排序：
+       1) 先取錨點人（不是 *之配偶、也不是 配偶(現任)/前配偶/伴侶），依年齡大→小。
+       2) 其「前配偶」放在錨點左側（緊鄰）。
+       3) 其「現任配偶／伴侶」放在錨點右側（緊鄰；現任優先）。
+       4) 其餘未使用者依年齡大→小補上。
     """
-    people={m["name"]:m for m in fam}
-    by_g=defaultdict(list)
-    for n,g in gen_map.items(): by_g[g].append(n)
+    people = {m["name"]: m for m in fam}
 
-    # 建 union 查詢（同代）
-    union_map=defaultdict(list)  # name -> [(partner, type)]
+    # 依代別分組
+    by_g = defaultdict(list)
+    for n, g in gen_map.items():
+        by_g[g].append(n)
+
+    # 建立同代的 union 對照
+    union_map = defaultdict(list)  # name -> [(partner, type)]
     for u in unions:
-        a,b=N(u["a"]),N(u["b"])
-        if a in gen_map and b in gen_map and gen_map[a]==gen_map[b]:
-            union_map[a].append((b, u.get("type","")))
-            union_map[b].append((a, u.get("type","")))
+        a, b = N(u["a"]), N(u["b"])
+        if a in gen_map and b in gen_map and gen_map[a] == gen_map[b]:
+            t = u.get("type", "")
+            union_map[a].append((b, t))
+            union_map[b].append((a, t))
 
     def is_anchor(n):
-        rel = people[n].get("relation","")
-        if "之配偶" in rel: return False
-        if rel in ("配偶(現任)","前配偶","伴侶"): return False
+        rel = people[n].get("relation", "")
+        if "之配偶" in rel:
+            return False
+        if rel in ("配偶(現任)", "前配偶", "伴侶"):
+            return False
         return True
 
-    priority = {"現任配偶":0,"伴侶":1,"前配偶":2}
+    right_priority = {"現任配偶": 0, "伴侶": 1}  # 右側排序：現任→伴侶→其他
 
-    orders={}
+    orders = {}
     for g, members in by_g.items():
+        # 先找錨點，年齡大→小
         anchors = [n for n in members if is_anchor(n)]
-        anchors.sort(key=lambda n:(-people[n].get("alive",True), -age_of(n), n))
-        used=set()
-        order=[]
+        anchors.sort(key=lambda n: (-people[n].get("alive", True), -int(people[n].get("age", 0)), n))
+
+        used = set()
+        order = []
+
         for a in anchors:
-            if a in used: continue
-            order.append(a); used.add(a)
-            partners = [(p, priority.get(t,5)) for p,t in union_map.get(a, []) if p not in used]
-            partners.sort(key=lambda x:x[1])
-            for p,_ in partners:
-                order.append(p); used.add(p)
-        rest=[n for n in members if n not in used]
-        rest.sort(key=lambda n:(-people[n].get("alive",True), -age_of(n), n))
+            if a in used:
+                continue
+
+            partners = union_map.get(a, [])
+
+            # 左側：前配偶（緊鄰，若多位依加入順序）
+            left = [p for p, t in partners if ("前配偶" in t) and (p not in used)]
+            for p in left:
+                order.append(p)
+                used.add(p)
+
+            # 錨點本人
+            order.append(a)
+            used.add(a)
+
+            # 右側：現任配偶/伴侶（現任優先）
+            right = [(p, right_priority.get(t, 99)) for p, t in partners if (p not in used) and ("前配偶" not in t)]
+            right.sort(key=lambda x: x[1])
+            for p, _ in right:
+                order.append(p)
+                used.add(p)
+
+        # 還沒被用到的（孤立或沒 union 的），依年齡大→小
+        rest = [n for n in members if n not in used]
+        rest.sort(key=lambda n: (-people[n].get("alive", True), -int(people[n].get("age", 0)), n))
         order.extend(rest)
-        orders[g]=order
+
+        orders[g] = order
+
     return orders
 
 def layout_independent(fam, unions):
@@ -260,8 +289,9 @@ def draw_svg(fam, unions, pos, gen):
 
     svg=[f'<svg width="{W}" height="{H}" xmlns="http://www.w3.org/2000/svg">']
 
-    # 1) 親子連線：父/母各自用 L 型連到孩子
+    # 1) 親子連線：父/母各自用 L 型連到孩子（不經由夫妻桿）
     for child,m in people.items():
+        if child not in pos: continue
         cx, cy = to_xy(*pos[child])
         xC = cx + CELL_W/2
         for parent_key in ("father","mother"):
@@ -275,7 +305,7 @@ def draw_svg(fam, unions, pos, gen):
                 svg.append(hline(min(xP, xC), ymid, max(xP, xC)))
                 svg.append(vline(xC, ymid, y2))
 
-    # 2) 婚姻連線（現任實線、前配偶虛線；不影響佈局）
+    # 2) 婚姻連線（現任/伴侶實線、前配偶虛線；不影響佈局）
     for u in st.session_state.unions:
         a,b=N(u["a"]),N(u["b"])
         if a in pos and b in pos and gen.get(a)==gen.get(b):
