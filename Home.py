@@ -209,17 +209,18 @@ def build_graph_simple():
 
     dot = Digraph(format="png")
     dot.attr(rankdir="TB", splines="ortho", nodesep="1.0", ranksep="1.4",
-             concentrate="false", newrank="true")
+             concentrate="false", newrank="true", ordering="out")
     dot.attr('edge', arrowhead='none')
     dot.attr('node', shape='box', style='rounded,filled',
              fontname="Noto Sans CJK TC, PingFang TC, Microsoft JhengHei")
 
-    # 依世代放同層
+    # 依世代放同層（兄弟姊妹排序只看孩子，不把配偶放入排序）
     for g in sorted(set(gen.values())):
         with dot.subgraph() as s:
             s.attr(rank="same")
             layer = [m for m in fam if gen[m["name"]]==g]
-            layer.sort(key=lambda m: (m["relation"]!="本人", m["relation"]!="配偶(現任)", -m["age"]))
+            # 排序：本人優先，其餘按年齡；不考慮配偶是否存在
+            layer.sort(key=lambda m: (m["relation"]!="本人", -m["age"]))
             for m in layer:
                 alive = bool(m.get("alive", True))
                 fill  = "khaki" if (m["relation"]=="本人" and alive) else ("#eeeeee" if not alive else "lightgrey")
@@ -229,15 +230,15 @@ def build_graph_simple():
 
     # 父母→孩子：透過垂直錨點
     parent_anchor = {}
-    def ensure_anchor(pname):
+    def ensure_parent_anchor(pname):
         if pname in parent_anchor: return parent_anchor[pname]
         aid = f"PA_{len(parent_anchor)}"
         parent_anchor[pname] = aid
         dot.node(aid, label="", shape="point", width="0.01", height="0.01", style="invis")
-        dot.edge(pname, aid, tailport="s", headport="n", weight="60", minlen="1")
+        dot.edge(pname, aid, tailport="s", headport="n", weight="80", minlen="1")  # 先向下
         return aid
 
-    # 兄弟姊妹排序（不改層）
+    # 兄弟姊妹順序（僅孩子本身）
     sib_groups = defaultdict(list)
     for m in fam:
         f, mo = N(m.get("father","")), N(m.get("mother",""))
@@ -253,22 +254,31 @@ def build_graph_simple():
         c = m["name"]
         f, mo = N(m.get("father","")), N(m.get("mother",""))
         if f in existing and f:
-            dot.edge(ensure_anchor(f),  c, tailport="s", headport="n", weight="30", minlen="1")
+            dot.edge(ensure_parent_anchor(f),  c, tailport="s", headport="n", weight="40", minlen="1")
         if mo in existing and mo:
-            dot.edge(ensure_anchor(mo), c, tailport="s", headport="n", weight="30", minlen="1")
+            dot.edge(ensure_parent_anchor(mo), c, tailport="s", headport="n", weight="40", minlen="1")
 
-    # 配偶：實線相鄰（現任配偶/伴侶用實線；前配偶虛線）
+    # 配偶：建立「配偶錨點」，強制相鄰；再畫一條可見實線（不影響層級）
+    couple_anchor = {}   # frozenset({a,b}) -> anchor id
+    def ensure_couple_anchor(a, b):
+        key = frozenset((a, b))
+        if key in couple_anchor: return couple_anchor[key]
+        cid = f"CA_{len(couple_anchor)}"
+        couple_anchor[key] = cid
+        dot.node(cid, label="", shape="point", width="0.01", height="0.01", style="invis")
+        # 不可見的 A→錨點→B，超高權重，固定 A 在左、B 在右，兩者緊靠
+        dot.edge(a, cid, style="invis", weight="999", minlen="0", constraint="true")
+        dot.edge(cid, b, style="invis", weight="999", minlen="0", constraint="true")
+        return cid
+
     for u in unions:
         a, b = N(u.get("a","")), N(u.get("b",""))
-        if a not in existing or b not in existing: 
+        if a not in existing or b not in existing:
             continue
-        # 1) 用不可見邊 + 同層子圖把兩人鎖在一起（順序靠 a->b）
-        with dot.subgraph() as s:
-            s.attr(rank="same")
-            s.edge(a, b, style="invis", weight="200")  # 高權重，促進相鄰
-        # 2) 畫可見的配偶線，但不影響分層
+        ensure_couple_anchor(a, b)
+        # 可見實線，不影響層級（只作視覺）
         vis_style = "solid" if u.get("type") != "前配偶" else "dashed"
-        dot.edge(a, b, style=vis_style, color="black", constraint="false", penwidth="1.4")
+        dot.edge(a, b, style=vis_style, color="black", penwidth="1.4", constraint="false")
 
     return dot
 
@@ -326,7 +336,7 @@ def build_graph_marriage_bar():
         for c in sorted(kids, key=lambda n: age_of(n), reverse=True):
             dot.edge(mid, c, tailport="s", headport="n", weight="12", minlen="2")
 
-    for u in unions:
+    for u in st.session_state.unions:
         a,b=N(u.get("a","")),N(u.get("b",""))
         if a in existing and b in existing:
             ensure_bar(a,b)
