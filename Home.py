@@ -205,33 +205,27 @@ def generation_orders(fam, gen_map, unions):
         order = []
 
         for a in anchors:
-            if a in used:
-                continue
-
+            if a in used: continue
             partners = union_map.get(a, [])
 
             # 左側：前配偶（緊鄰，若多位依加入順序）
             left = [p for p, t in partners if ("前配偶" in t) and (p not in used)]
             for p in left:
-                order.append(p)
-                used.add(p)
+                order.append(p); used.add(p)
 
             # 錨點本人
-            order.append(a)
-            used.add(a)
+            order.append(a); used.add(a)
 
             # 右側：現任配偶/伴侶（現任優先）
             right = [(p, right_priority.get(t, 99)) for p, t in partners if (p not in used) and ("前配偶" not in t)]
             right.sort(key=lambda x: x[1])
             for p, _ in right:
-                order.append(p)
-                used.add(p)
+                order.append(p); used.add(p)
 
         # 還沒被用到的（孤立或沒 union 的），依年齡大→小
         rest = [n for n in members if n not in used]
         rest.sort(key=lambda n: (-people[n].get("alive", True), -int(people[n].get("age", 0)), n))
         order.extend(rest)
-
         orders[g] = order
 
     return orders
@@ -284,36 +278,45 @@ def draw_svg(fam, unions, pos, gen):
   <text x="{x+w/2}" y="{y+h/2+6}" text-anchor="middle" font-family="Noto Sans CJK TC, Microsoft JhengHei" font-size="18" fill="#222">{label}</text>
 '''
 
-    def hline(x1,y1,x2,w=2): return f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y1}" stroke="#222" stroke-width="{w}"/>'
-    def vline(x1,y1,y2,w=2): return f'<line x1="{x1}" y1="{y1}" x2="{x1}" y2="{y2}" stroke="#222" stroke-width="{w}"/>'
+    def hline(x1,y1,x2,w=2,style=""): 
+        return f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y1}" stroke="#222" stroke-width="{w}" {style}/>'
+    def vline(x1,y1,y2,w=2,style=""): 
+        return f'<line x1="{x1}" y1="{y1}" x2="{x1}" y2="{y2}" stroke="#222" stroke-width="{w}" {style}/>'
 
     svg=[f'<svg width="{W}" height="{H}" xmlns="http://www.w3.org/2000/svg">']
 
-    # 1) 親子連線：父/母各自用 L 型連到孩子（不經由夫妻桿）
+    # 1) 親子連線：父/母各自用 L 型連到孩子（在父/母附近就轉彎，父母兩條線高度不同）
+    #    這樣不會在同一高度形成一條「高速公路」造成看起來連到前妻的錯覺
     for child,m in people.items():
         if child not in pos: continue
         cx, cy = to_xy(*pos[child])
         xC = cx + CELL_W/2
-        for parent_key in ("father","mother"):
+        yChildTop = cy
+
+        for idx, parent_key in enumerate(("father","mother")):
             p = N(m.get(parent_key,""))
-            if p and p in pos:
-                px, py = to_xy(*pos[p]); xP = px + CELL_W/2
-                y1 = py + CELL_H
-                y2 = cy
-                ymid = int((y1 + y2) / 2)
-                svg.append(vline(xP, y1, ymid))
-                svg.append(hline(min(xP, xC), ymid, max(xP, xC)))
-                svg.append(vline(xC, ymid, y2))
+            if not p or p not in pos: continue
+            px, py = to_xy(*pos[p]); xP = px + CELL_W/2
+            yParentBottom = py + CELL_H
+
+            # 在父/母底下 14/26px 的不同高度轉彎（idx=0/1）
+            ymid = yParentBottom + (14 if idx==0 else 26)
+
+            # 三段式 L 線：父/母往下 → 橫過去 → 於孩子正上方往下
+            svg.append(vline(xP, yParentBottom, ymid, w=2))
+            svg.append(hline(min(xP, xC), ymid, max(xP, xC), w=2))
+            svg.append(vline(xC, ymid, yChildTop, w=2))
 
     # 2) 婚姻連線（現任/伴侶實線、前配偶虛線；不影響佈局）
     for u in st.session_state.unions:
         a,b=N(u["a"]),N(u["b"])
         if a in pos and b in pos and gen.get(a)==gen.get(b):
             ax, ay = to_xy(*pos[a]); bx, by = to_xy(*pos[b])
-            y = int((ay + by)/2) + CELL_H + 8
+            # 線畫在兩人框下方一點點，避免干擾親子線
+            y = min(ay,by) + CELL_H + 6
             x1 = ax + CELL_W/2; x2 = bx + CELL_W/2
-            dashed = ' stroke-dasharray="6,6"' if "前配偶" in u.get("type","") else ""
-            svg.append(f'<line x1="{min(x1,x2)}" y1="{y}" x2="{max(x1,x2)}" y2="{y}" stroke="#444" stroke-width="2"{dashed}/>')
+            dashed = 'stroke-dasharray="6,6"' if "前配偶" in u.get("type","") else ""
+            svg.append(f'<line x1="{min(x1,x2)}" y1="{y}" x2="{max(x1,x2)}" y2="{y}" stroke="#444" stroke-width="2" {dashed}/>')
 
     # 3) 人名框
     for name in sorted(pos, key=lambda n:(pos[n][1], pos[n][0])):
@@ -326,6 +329,24 @@ def draw_svg(fam, unions, pos, gen):
 pos, gen = layout_independent(st.session_state.family, st.session_state.unions)
 svg = draw_svg(st.session_state.family, st.session_state.unions, pos, gen)
 st.markdown(svg, unsafe_allow_html=True)
+
+# ===== 檢查小工具：幫你快速抓錯誤填寫的父/母 =====
+st.divider()
+st.subheader("🔎 親子關係檢查（快速檢核父/母是否填錯）")
+if st.session_state.family:
+    issues = []
+    name_set = {m["name"] for m in st.session_state.family}
+    for m in st.session_state.family:
+        f = N(m.get("father","")); mo = N(m.get("mother",""))
+        if f and f not in name_set:
+            issues.append({"child":m["name"], "field":"father", "value":f, "problem":"找不到此人"})
+        if mo and mo not in name_set:
+            issues.append({"child":m["name"], "field":"mother", "value":mo, "problem":"找不到此人"})
+    if issues:
+        st.warning("發現可能的填寫問題：")
+        st.dataframe(pd.DataFrame(issues), use_container_width=True)
+    else:
+        st.success("父/母欄位看起來都正確 ✅")
 
 st.divider()
 st.markdown(
